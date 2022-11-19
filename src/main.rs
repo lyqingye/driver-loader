@@ -1,5 +1,5 @@
 use anyhow::Result;
-use winapi::um::winioctl::{FILE_DEVICE_UNKNOWN, METHOD_BUFFERED, FILE_ANY_ACCESS, CTL_CODE};
+use winapi::um::winioctl::{CTL_CODE, FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED};
 use windows::Win32::Foundation::GetLastError;
 
 pub mod driver_controler;

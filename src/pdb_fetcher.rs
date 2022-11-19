@@ -8,7 +8,7 @@ pub fn download<P: AsRef<Path> + ?Sized>(exe_path: &P, output_path: &P) -> Resul
         .write(false)
         .create(false)
         .open(exe_path)?;
-    
+
     // load exe file by using mmap
     let pdb_file_data = unsafe { memmap::MmapOptions::new().map(&pdb_file)? };
 
@@ -49,93 +49,12 @@ pub fn download<P: AsRef<Path> + ?Sized>(exe_path: &P, output_path: &P) -> Resul
 
 #[cfg(test)]
 mod test {
-    use std::fs::remove_file;
-
     use super::*;
-    use pdb::{FallibleIterator, TypeData};
+    use std::fs::remove_file;
 
     #[test]
     fn test_download_pdb() {
         assert!(download("C:\\Windows\\System32\\ntoskrnl.exe", "download.bin").is_ok());
         remove_file("download.bin").unwrap();
-    }
-
-    #[test]
-    fn test_pdb() {
-        let file = std::fs::File::open(
-            "F:\\windbgsymbols\\ntkrnlmp.pdb\\35A038B1F6E2E8CAF642111E6EC66F571\\ntkrnlmp.pdb",
-        )
-        .unwrap();
-        let mut pdb = pdb::PDB::open(file).unwrap();
-        // pdb.pdb_information().unwrap();
-        let type_information = pdb.type_information().unwrap();
-        let mut type_finder = type_information.finder();
-
-        let mut type_iter = type_information.iter();
-        while let Some(typ) = type_iter.next().unwrap() {
-            // keep building the index
-            type_finder.update(&type_iter);
-
-            if let Ok(pdb::TypeData::Class(class)) = typ.parse() {
-                if class.name.as_bytes().eq(b"_HANDLE_TABLE")
-                    && !class.properties.forward_reference()
-                {
-                    println!("{:?} {:x}", class.name.to_string(), class.size);
-                    match type_finder
-                        .find(class.fields.unwrap())
-                        .unwrap()
-                        .parse()
-                        .unwrap()
-                    {
-                        pdb::TypeData::Class(data) => {
-                            println!("{:?}", data);
-                        }
-                        pdb::TypeData::Enumeration(data) => {
-                            println!("{:?}", data);
-                        }
-                        pdb::TypeData::FieldList(fields) => {
-                            for ele in fields.fields {
-                                match ele {
-                                    TypeData::Member(f) => {
-                                        println!("{:?} + {:x}", f.name.to_string(), f.offset);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        let symbol_table = pdb.global_symbols().unwrap();
-        let address_map = pdb.address_map().unwrap();
-        let mut symbols = symbol_table.iter();
-        while let Some(symbol) = symbols.next().unwrap() {
-            match symbol.parse() {
-                Ok(pdb::SymbolData::Public(data)) => {
-                    // we found the location of a function!
-                    let rva = data.offset.to_rva(&address_map).unwrap_or_default();
-                    if data.name.to_string() == "PspCidTable" {
-                        println!("{} is {}", rva, data.name);
-                    }
-                    if data.name.to_string() == "ExBlockOnAddressPushLock" {
-                        println!("{} is {}", rva, data.name);
-                    }
-                    if data.name.to_string() == "ExfUnblockPushLock" {
-                        println!("{} is {}", rva, data.name);
-                    }
-                    if data.name.to_string() == "_HANDLE_TABLE" {
-                        println!("{} is {}", rva, data.name);
-                    }
-                    // println!("{} is {} {:?}", rva, data.name,data);
-                }
-                Ok(pdb::SymbolData::RegisterRelative(data)) => {
-                    println!("{} ", data.name);
-                }
-
-                _ => {}
-            }
-        }
     }
 }

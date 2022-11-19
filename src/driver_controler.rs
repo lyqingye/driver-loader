@@ -1,7 +1,7 @@
-use std::{mem::size_of, ops::Add};
-use num_enum::{TryFromPrimitive,IntoPrimitive};
 use crate::p;
-use anyhow::{Result, Ok};
+use anyhow::{Ok, Result};
+use num_enum::{IntoPrimitive, TryFromPrimitive};
+use std::{mem::size_of, ops::Add};
 use windows::Win32::{
     Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE},
     Storage::FileSystem::{
@@ -12,14 +12,14 @@ use windows::Win32::{
 };
 
 #[allow(non_camel_case_types)]
-#[derive(Debug,PartialEq,IntoPrimitive,TryFromPrimitive)]
+#[derive(Debug, PartialEq, IntoPrimitive, TryFromPrimitive)]
 #[repr(u32)]
 pub enum ErrorCode {
     ERR_SUCCESS,
-	ERR_INVALID_PARAMS,
-	ERR_CONTEXT_DESERIALZE_INVALID_BUFFER,
-	ERR_CONTEXT_INVALID,
-	ERR_CONTEXT_KERNEL_BASE_NOT_FOUND,
+    ERR_INVALID_PARAMS,
+    ERR_CONTEXT_DESERIALZE_INVALID_BUFFER,
+    ERR_CONTEXT_INVALID,
+    ERR_CONTEXT_KERNEL_BASE_NOT_FOUND,
 }
 impl Default for ErrorCode {
     fn default() -> Self {
@@ -28,8 +28,8 @@ impl Default for ErrorCode {
 }
 
 #[repr(C)]
-#[derive(Debug,Default)]
-pub struct GlobalContext{
+#[derive(Debug, Default)]
+pub struct GlobalContext {
     driver_object: usize,
     pfn_ex_block_on_address_push_lock: usize,
     ntos_krnl_base: usize,
@@ -40,7 +40,7 @@ pub struct GlobalContext{
     obp_root_directory_object: usize,
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub struct CallResult {
     pub err: ErrorCode,
     pub data: Vec<u8>,
@@ -54,25 +54,22 @@ impl CallResult {
 
 pub fn parse_call_result_from_buffer(buffer: &[u8]) -> Result<CallResult> {
     let size_of_meta = size_of::<ErrorCode>() + size_of::<usize>();
-    
+
     if buffer.len() < size_of_meta {
         return Err(anyhow::anyhow!("buffer size to small"));
     }
     let ptr = buffer.as_ptr();
-    let error = ErrorCode::try_from_primitive(unsafe {(ptr as *const u32).read()})?;
-    let size_of_data = unsafe{((ptr.add(size_of::<ErrorCode>())) as *const usize).read()};
+    let error = ErrorCode::try_from_primitive(unsafe { (ptr as *const u32).read() })?;
+    let size_of_data = unsafe { ((ptr.add(size_of::<ErrorCode>())) as *const usize).read() };
 
     let data;
     if buffer.len() >= (size_of_meta + size_of_data) {
-        data = buffer[size_of_meta .. (size_of_meta + size_of_data)].to_vec();
-    }else {
+        data = buffer[size_of_meta..(size_of_meta + size_of_data)].to_vec();
+    } else {
         data = vec![];
     }
 
-    Ok(CallResult{
-        err: error,
-        data,
-    })
+    Ok(CallResult { err: error, data })
 }
 
 pub struct DriverControler {
@@ -167,7 +164,6 @@ impl DriverControler {
     pub fn send_init_global_context() -> Result<CallResult> {
         Ok(CallResult::default())
     }
-
 }
 
 impl Drop for DriverControler {
@@ -187,13 +183,12 @@ pub fn new(device_name: String) -> DriverControler {
     }
 }
 
-
 #[cfg(test)]
 mod test {
     use super::{parse_call_result_from_buffer, ErrorCode};
 
     #[test]
-    fn test_parse_call_result () {
+    fn test_parse_call_result() {
         let mut buffer = Vec::new();
         let code: u32 = ErrorCode::ERR_CONTEXT_DESERIALZE_INVALID_BUFFER.into();
         for ele in code.to_le_bytes() {
@@ -203,14 +198,14 @@ mod test {
             buffer.push(ele);
         }
         let mut data = Vec::new();
-        for i in 0..10  {
+        for i in 0..10 {
             buffer.push(i as u8);
             data.push(i as u8);
         }
         println!("buffer len: {}", buffer.len());
 
         let result = parse_call_result_from_buffer(buffer.as_slice()).unwrap();
-        assert_eq!(ErrorCode::ERR_CONTEXT_DESERIALZE_INVALID_BUFFER,result.err);
-        assert_eq!(data,result.data);
+        assert_eq!(ErrorCode::ERR_CONTEXT_DESERIALZE_INVALID_BUFFER, result.err);
+        assert_eq!(data, result.data);
     }
 }
