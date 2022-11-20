@@ -86,7 +86,7 @@ impl<'a> SymbolManager<'a> {
     }
 }
 
-pub fn new<P: AsRef<Path> + ?Sized>(pdb_path: &P) -> Result<SymbolManager> {
+pub fn new<'a>(pdb_path: String) -> Result<SymbolManager<'a>> {
     let pdb_file = std::fs::OpenOptions::new()
         .read(true)
         .write(false)
@@ -113,9 +113,11 @@ mod test {
     use super::*;
     #[test]
     fn test_find_symbol() {
-        let mut manager =
-            new("F:\\windbgsymbols\\ntkrnlmp.pdb\\35A038B1F6E2E8CAF642111E6EC66F571\\ntkrnlmp.pdb")
-                .unwrap();
+        let mut manager = new(
+            "F:\\windbgsymbols\\ntkrnlmp.pdb\\35A038B1F6E2E8CAF642111E6EC66F571\\ntkrnlmp.pdb"
+                .to_string(),
+        )
+        .unwrap();
         let offset = manager
             .find_symbol_offset_by_name("PspCidTable".to_owned())
             .unwrap();
@@ -124,9 +126,11 @@ mod test {
 
     #[test]
     fn test_find_class() {
-        let mut manager =
-            new("F:\\windbgsymbols\\ntkrnlmp.pdb\\35A038B1F6E2E8CAF642111E6EC66F571\\ntkrnlmp.pdb")
-                .unwrap();
+        let mut manager = new(
+            "F:\\windbgsymbols\\ntkrnlmp.pdb\\35A038B1F6E2E8CAF642111E6EC66F571\\ntkrnlmp.pdb"
+                .to_string(),
+        )
+        .unwrap();
         let clazz = manager
             .find_class_by_name("_HANDLE_TABLE".to_string())
             .unwrap();

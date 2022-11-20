@@ -1,15 +1,29 @@
 use crate::p;
 use anyhow::{Ok, Result};
+use lazy_static::lazy_static;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use std::{mem::size_of, ops::Add};
+use winapi::um::winioctl::{CTL_CODE, FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED};
 use windows::Win32::{
     Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE},
     Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE,
         OPEN_EXISTING,
     },
-    System::IO::DeviceIoControl,
+    System::{self, IO::DeviceIoControl},
 };
+
+//
+// Driver CTL Codes
+//
+lazy_static! {
+    static ref CTL_CODE_ECHO: u32 =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS);
+    static ref CTL_CODE_INIT_CONTEXT: u32 =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS);
+    static ref CTL_CODE_QUERY_KERNEL_MODULE_INFO: u32 =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS);
+}
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, PartialEq, IntoPrimitive, TryFromPrimitive)]
@@ -27,6 +41,12 @@ impl Default for ErrorCode {
     }
 }
 
+impl ErrorCode {
+    pub fn to_err(&self) -> anyhow::Error {
+        anyhow::anyhow!("{:?}", self)
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct GlobalContext {
@@ -40,6 +60,26 @@ pub struct GlobalContext {
     obp_root_directory_object: usize,
 }
 
+#[repr(C)]
+#[derive(Debug)]
+pub struct SystemModuleEntry {
+    pub image_base: usize,
+    pub image_size: u32,
+    pub full_path_name: [u8; 256],
+}
+
+impl TryFrom<Vec<u8>> for SystemModuleEntry {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        assert_eq!(272, size_of::<SystemModuleEntry>());
+        if value.len() < size_of::<SystemModuleEntry>() {
+            return Err(anyhow::anyhow!("SystemModuleEntry buffer to small"));
+        }
+        Ok(unsafe { (value.as_ptr() as *const SystemModuleEntry).read() })
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct CallResult {
     pub err: ErrorCode,
@@ -49,6 +89,10 @@ pub struct CallResult {
 impl CallResult {
     pub fn is_success(&self) -> bool {
         self.err == ErrorCode::ERR_SUCCESS
+    }
+
+    pub fn to_err(&self) -> anyhow::Error {
+        self.err.to_err()
     }
 }
 
@@ -93,7 +137,7 @@ impl DriverControler {
         Ok(())
     }
 
-    pub fn send(&self, code: u32, input: Vec<u8>, size_of_output: usize) -> Result<CallResult> {
+    pub fn send(&mut self, code: u32, input: Vec<u8>, size_of_output: usize) -> Result<CallResult> {
         const SIZE_OF_META: usize = size_of::<ErrorCode>() + size_of::<usize>();
         let mut bytes_return = 0;
         if size_of_output > 0 {
@@ -161,8 +205,21 @@ impl DriverControler {
         }
     }
 
-    pub fn send_init_global_context() -> Result<CallResult> {
+    pub fn init_global_context() -> Result<CallResult> {
         Ok(CallResult::default())
+    }
+
+    pub fn qeury_kernel_module_info(&mut self) -> Result<SystemModuleEntry> {
+        let call_result = self.send(
+            *CTL_CODE_QUERY_KERNEL_MODULE_INFO,
+            vec![],
+            size_of::<SystemModuleEntry>(),
+        )?;
+        if call_result.is_success() {
+            SystemModuleEntry::try_from(call_result.data)
+        } else {
+            Err(call_result.to_err())
+        }
     }
 }
 
