@@ -1,4 +1,4 @@
-use crate::p;
+use crate::{p, pdb_manager};
 use anyhow::{Ok, Result};
 use lazy_static::lazy_static;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -10,7 +10,7 @@ use windows::Win32::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE,
         OPEN_EXISTING,
     },
-    System::{self, IO::DeviceIoControl},
+    System::{self, SystemInformation::GetSystemDirectoryW, IO::DeviceIoControl},
 };
 
 //
@@ -51,13 +51,25 @@ impl ErrorCode {
 #[derive(Debug, Default)]
 pub struct GlobalContext {
     driver_object: usize,
-    pfn_ex_block_on_address_push_lock: usize,
     ntos_krnl_base: usize,
+
+    // undocuments
+    pfn_ex_block_on_address_push_lock: usize,
+    pfn_exf_unblock_push_lock: usize,
     ps_loaded_module_list: usize,
     ps_loaded_module_resource: usize,
     ob_type_index_table: usize,
     ob_header_cookie: usize,
     obp_root_directory_object: usize,
+}
+
+impl Into<Vec<u8>> for GlobalContext {
+    fn into(self) -> Vec<u8> {
+        unsafe {
+            let ptr = &self as *const GlobalContext as *const u8;
+            std::slice::from_raw_parts(ptr, std::mem::size_of::<GlobalContext>()).to_vec()
+        }
+    }
 }
 
 #[repr(C)]
@@ -66,6 +78,25 @@ pub struct SystemModuleEntry {
     pub image_base: usize,
     pub image_size: u32,
     pub full_path_name: [u8; 256],
+}
+
+impl SystemModuleEntry {
+    pub fn full_path(&self) -> String {
+        let path = unsafe {
+            String::from_utf16_lossy(std::slice::from_raw_parts(
+                self.full_path_name.as_ptr().cast::<u16>(),
+                self.full_path_name.len() / 2,
+            ))
+            .trim_matches(char::from(0))
+            .to_string()
+        };
+        let mut buffer = vec![0u16; 255];
+        unsafe { GetSystemDirectoryW(Some(buffer.as_mut_slice())) };
+        path.replace(
+            "\\SystemRoot\\system32",
+            String::from_utf16_lossy(buffer.as_slice()).trim_matches(char::from(0)),
+        )
+    }
 }
 
 impl TryFrom<Vec<u8>> for SystemModuleEntry {
@@ -137,7 +168,7 @@ impl DriverControler {
         Ok(())
     }
 
-    pub fn send(&mut self, code: u32, input: Vec<u8>, size_of_output: usize) -> Result<CallResult> {
+    pub fn send(&self, code: u32, input: Vec<u8>, size_of_output: usize) -> Result<CallResult> {
         const SIZE_OF_META: usize = size_of::<ErrorCode>() + size_of::<usize>();
         let mut bytes_return = 0;
         if size_of_output > 0 {
@@ -205,11 +236,41 @@ impl DriverControler {
         }
     }
 
-    pub fn init_global_context() -> Result<CallResult> {
-        Ok(CallResult::default())
+    pub fn init_global_context(&self) -> Result<CallResult> {
+        let kernel_module = self.qeury_kernel_module_info()?;
+        let cache_dir = format!("{}\\symbols", std::env::temp_dir().to_string_lossy());
+        let pdb_mgr = pdb_manager::new(cache_dir)?;
+        let mut symbol = pdb_mgr.get_symbol_manager(&kernel_module.full_path())?;
+        let mut context = GlobalContext::default();
+        context.pfn_ex_block_on_address_push_lock = symbol
+            .find_symbol_offset_by_name("ExBlockOnAddressPushLock".to_owned())
+            .ok_or(anyhow::anyhow!(
+                "symbol: ExBlockOnAddressPushLock not found!"
+            ))?;
+        context.pfn_exf_unblock_push_lock = symbol
+            .find_symbol_offset_by_name("ExfUnblockPushLock".to_owned())
+            .ok_or(anyhow::anyhow!("symbol: ExfUnblockPushLock not found!"))?;
+        context.ps_loaded_module_list = symbol
+            .find_symbol_offset_by_name("PsLoadedModuleList".to_owned())
+            .ok_or(anyhow::anyhow!("symbol: PsLoadedModuleList not found!"))?;
+        context.ps_loaded_module_resource = symbol
+            .find_symbol_offset_by_name("PsLoadedModuleResource".to_owned())
+            .ok_or(anyhow::anyhow!("symbol: PsLoadedModuleResource not found!"))?;
+        context.ob_type_index_table = symbol
+            .find_symbol_offset_by_name("ObTypeIndexTable".to_owned())
+            .ok_or(anyhow::anyhow!("symbol: ObTypeIndexTable not found!"))?;
+        context.ob_header_cookie = symbol
+            .find_symbol_offset_by_name("ObHeaderCookie".to_owned())
+            .ok_or(anyhow::anyhow!("symbol: ObHeaderCookie not found!"))?;
+        context.obp_root_directory_object = symbol
+            .find_symbol_offset_by_name("ObpRootDirectoryObject".to_owned())
+            .ok_or(anyhow::anyhow!("symbol: ObpRootDirectoryObject not found!"))?;
+
+        // call driver
+        self.send(*CTL_CODE_INIT_CONTEXT, context.into(), 0)
     }
 
-    pub fn qeury_kernel_module_info(&mut self) -> Result<SystemModuleEntry> {
+    pub fn qeury_kernel_module_info(&self) -> Result<SystemModuleEntry> {
         let call_result = self.send(
             *CTL_CODE_QUERY_KERNEL_MODULE_INFO,
             vec![],

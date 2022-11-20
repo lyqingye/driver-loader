@@ -11,7 +11,7 @@ use crate::symbol::SymbolManager;
 
 pub mod driver_controler;
 pub mod driver_loader;
-pub mod pdb;
+pub mod pdb_manager;
 pub mod symbol;
 
 fn main() -> Result<()> {
@@ -26,25 +26,7 @@ fn main() -> Result<()> {
     ldr.start_service().unwrap();
     let mut controler = driver_controler::new("\\??\\WindowsKernelResearch".to_owned());
     controler.conn().unwrap();
-    let module_information = controler.qeury_kernel_module_info().unwrap();
-    println!("base: {:x}", module_information.image_base);
-    let full_path = unsafe {
-        std::slice::from_raw_parts(
-            module_information.full_path_name.as_ptr().cast::<u16>(),
-            module_information.full_path_name.len() / 2,
-        )
-    };
-    println!("full path {:}", String::from_utf16_lossy(full_path));
-    println!("{:?}", module_information);
-
-    let mut buffer = vec![0u16; 255];
-    unsafe { GetSystemDirectoryW(Some(buffer.as_mut_slice())) };
-    let path = String::from_utf16_lossy(full_path).replace(
-        "\\SystemRoot\\system32",
-        String::from_utf16_lossy(buffer.as_slice()).as_str(),
-    );
-
-    // let mgr = symbol::new(&path).unwrap();
+    controler.init_global_context().unwrap();
     pause();
     Ok(())
 }
@@ -54,24 +36,4 @@ fn pause() {
     stdout.write(b"Press Enter to continue...").unwrap();
     stdout.flush().unwrap();
     stdin().read(&mut [0]).unwrap();
-}
-
-#[cfg(test)]
-mod test {
-    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
-
-    use crate::p;
-
-    #[test]
-    fn test() {
-        unsafe {
-            let mut buffer = vec![0u16; 255];
-            GetSystemDirectoryW(Some(buffer.as_mut_slice()));
-            let path = "\\SystemRoot\\system32\\ntoskrnl.exe".replace(
-                "\\SystemRoot\\system32",
-                String::from_utf16_lossy(buffer.as_slice()).as_str(),
-            );
-            println!("{}", path);
-        }
-    }
 }

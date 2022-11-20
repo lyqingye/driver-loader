@@ -25,7 +25,7 @@ pub struct ClassField {
 }
 
 impl<'a> SymbolManager<'a> {
-    pub fn find_symbol_offset_by_name(&mut self, symbol_name: String) -> Option<u64> {
+    pub fn find_symbol_offset_by_name(&mut self, symbol_name: String) -> Option<usize> {
         let mut symbols = self.symbol_table.iter();
         while let Ok(Some(symbol)) = symbols.next() {
             match symbol.parse() {
@@ -33,7 +33,7 @@ impl<'a> SymbolManager<'a> {
                     // we found the location of a function!
                     let rva = data.offset.to_rva(&self.address_map).unwrap_or_default();
                     if data.name.to_string() == symbol_name {
-                        return Some(rva.0.into());
+                        return Some(rva.0 as usize);
                     }
                 }
                 _ => {}
