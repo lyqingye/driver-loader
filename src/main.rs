@@ -7,16 +7,14 @@ use winapi::{
 };
 use windows::Win32::{Foundation::GetLastError, System::SystemInformation::GetSystemDirectoryW};
 
-use crate::symbol::SymbolManager;
-
 pub mod driver_controler;
 pub mod driver_loader;
 pub mod pdb_manager;
-pub mod symbol;
+pub mod symbol_manager;
 
 fn main() -> Result<()> {
     let mut ldr = driver_loader::new(
-        "\\\\vmware-host\\Shared Folders\\Driver\\KMDFDriver2.sys".to_owned(),
+        "\\\\vmware-host\\Shared Folders\\Driver\\Driver.sys".to_owned(),
         "driver3".to_owned(),
         "driver3".to_owned(),
     );

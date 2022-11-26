@@ -2,7 +2,7 @@ use anyhow::Result;
 use goblin::pe::PE;
 use std::{fmt::Debug, fs::OpenOptions, path::Path, str::FromStr};
 
-use crate::symbol::{self, SymbolManager};
+use crate::symbol_manager::{self, SymbolManager};
 
 #[derive(Debug)]
 pub struct PDBManager {
@@ -20,13 +20,13 @@ impl<'a> PDBManager {
         if !pdb_path.exists() {
             self.download_pdb_file(&debug_info)?;
         }
-        let mut result = symbol::new(pdb.clone());
+        let mut result = symbol_manager::SymbolManager::new(pdb.clone());
         if result.is_err() {
             // retry
             std::fs::remove_file(pdb_path)?;
             self.download_pdb_file(&debug_info)?;
         }
-        result = symbol::new(pdb);
+        result = symbol_manager::SymbolManager::new(pdb);
         result
     }
 
