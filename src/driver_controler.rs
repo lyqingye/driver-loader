@@ -1,7 +1,7 @@
 use crate::{p, pdb_manager};
 use anyhow::{Ok, Result};
 use lazy_static::lazy_static;
-use std::{mem::size_of, ops::Add};
+use std::mem::size_of;
 use winapi::um::winioctl::{CTL_CODE, FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED};
 use windows::Win32::{
     Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS},

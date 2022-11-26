@@ -1,7 +1,7 @@
 use anyhow::Result;
 use memmap::Mmap;
-use pdb::{FallibleIterator, ItemFinder, TypeIndex, ItemIter};
-use std::{any::Any, collections::HashMap, hash::Hash, ops::Deref, path::Path};
+use pdb::{FallibleIterator, TypeIndex};
+use std::collections::HashMap;
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -115,9 +115,7 @@ impl<'a> SymbolManager<'a> {
             class_info_cache: HashMap::new(),
         })
     }
-
 }
-
 
 #[cfg(test)]
 mod test {
@@ -135,15 +133,12 @@ mod test {
 
     #[test]
     fn test_find_class() {
-        let mut manager =  SymbolManager::new(
+        let mut manager = SymbolManager::new(
             "F:\\windbgsymbols\\ntkrnlmp.pdb\\35A038B1F6E2E8CAF642111E6EC66F571\\ntkrnlmp.pdb"
                 .to_string(),
         )
         .unwrap();
-        let clazz = manager
-            .find_class_by_name("_OBJECT_TYPE")
-            .unwrap();
+        let clazz = manager.find_class_by_name("_OBJECT_TYPE").unwrap();
         println!("{:?}", clazz);
-
     }
 }

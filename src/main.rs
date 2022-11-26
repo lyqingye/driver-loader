@@ -1,11 +1,6 @@
 use std::io::{stdin, stdout, Read, Write};
 
 use anyhow::Result;
-use winapi::{
-    shared::ntdef::UNICODE_STRING,
-    um::winioctl::{CTL_CODE, FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED},
-};
-use windows::Win32::{Foundation::GetLastError, System::SystemInformation::GetSystemDirectoryW};
 
 pub mod driver_controler;
 pub mod driver_loader;
