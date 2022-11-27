@@ -1,4 +1,4 @@
-use crate::{p, pdb_manager};
+use crate::{pcwstr, pdb_manager};
 use anyhow::{Ok, Result};
 use lazy_static::lazy_static;
 use std::mem::size_of;
@@ -145,7 +145,7 @@ impl DriverControler {
     pub fn conn(&mut self) -> Result<()> {
         unsafe {
             self.hdevice = CreateFileW(
-                p!(self.device_name),
+                pcwstr!(self.device_name),
                 FILE_GENERIC_READ | FILE_GENERIC_WRITE,
                 FILE_SHARE_NONE,
                 None,

@@ -5,14 +5,14 @@ edition = "2021"
 
 [dependencies]
 lazy_static = "1.4.0"
-anyhow = "1.0.50"
+anyhow = "1.0.66"
 thiserror = "1.0.37"
 goblin = {version= "0.6.0", features = ["pe64"]}
 pdb = "0.8.0"
 memmap = "0.7.0"
 reqwest = {version = "0.11.12", features = ["blocking"]}
 log = "0.4.17"
-env_logger = "0.9.3"
+env_logger = "0.10.0"
 
 [dependencies.winapi]
 version = "0.3.9"

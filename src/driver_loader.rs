@@ -4,6 +4,7 @@ use windows::Win32::{
         GetLastError, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
         ERROR_SERVICE_EXISTS, ERROR_SERVICE_MARKED_FOR_DELETE,
     },
+    Security::SC_HANDLE,
     System::{
         Services::{
             CloseServiceHandle, ControlService, CreateServiceW, DeleteService, OpenSCManagerW,
@@ -16,8 +17,10 @@ use windows::Win32::{
     },
 };
 
+use crate::error::DrvLdrError;
+
 #[macro_export]
-macro_rules! p {
+macro_rules! pcwstr {
     ($str: expr) => {
         windows::core::PCWSTR::from_raw(
             $str.encode_utf16()
@@ -28,290 +31,210 @@ macro_rules! p {
     };
 }
 
-unsafe fn to_buffer<T: Sized>(ptr: &T) -> &[u8] {
-    std::slice::from_raw_parts((ptr as *const T) as *const u8, ::std::mem::size_of::<T>())
-}
-
 unsafe fn to_buffer_mut<T: Sized>(ptr: &mut T) -> &mut [u8] {
     std::slice::from_raw_parts_mut((ptr as *mut T) as *mut u8, ::std::mem::size_of::<T>())
 }
 
-#[derive(Debug, Clone)]
-pub struct DriverLoader {
-    file_path: String,
+#[derive(Debug)]
+pub struct DrvLdr {
+    handle: SC_HANDLE,
     service_name: String,
     display_name: String,
+    file_path: String,
 }
 
-impl DriverLoader {
-    pub fn install_service(&mut self) -> Result<()> {
-        unsafe {
-            let hmanager = OpenSCManagerW(None, None, SC_MANAGER_ALL_ACCESS)?;
-            println!("{:?}", p!(self.file_path).to_string().unwrap());
-            if let Ok(hservice) = CreateServiceW(
-                hmanager,
-                p!(self.service_name),
-                p!(self.display_name),
+impl DrvLdr {
+    pub fn new(service_name: &str, display_name: &str, file_path: &str) -> Result<DrvLdr> {
+        if let Ok(handle) = unsafe { OpenSCManagerW(None, None, SC_MANAGER_ALL_ACCESS) } {
+            Ok(DrvLdr {
+                handle,
+                service_name: service_name.to_owned(),
+                display_name: display_name.to_owned(),
+                file_path: file_path.to_owned(),
+            })
+        } else {
+            Err(
+                DrvLdrError::OpenSCManagerErr(unsafe { GetLastError().to_hresult().message() })
+                    .into(),
+            )
+        }
+    }
+
+    pub fn install_service(&self) -> Result<()> {
+        log::debug!("install {} service", self.service_name);
+        if let Ok(hservice) = unsafe {
+            CreateServiceW(
+                self.handle,
+                pcwstr!(self.service_name),
+                pcwstr!(self.display_name),
                 SC_MANAGER_ALL_ACCESS,
                 SERVICE_KERNEL_DRIVER,
                 SERVICE_DEMAND_START,
                 SERVICE_ERROR_NORMAL,
-                p!(self.file_path),
+                pcwstr!(self.file_path),
                 None,
                 None,
                 None,
                 None,
                 None,
-            ) {
-                CloseServiceHandle(hservice);
-                CloseServiceHandle(hmanager);
-                Ok(())
+            )
+        } {
+            unsafe { CloseServiceHandle(hservice) };
+            Ok(())
+        } else {
+            let last_error = unsafe { GetLastError() };
+            if last_error == ERROR_SERVICE_EXISTS {
+                log::debug!("service {} already exists", self.service_name);
+                return Ok(());
+            }
+            Err(DrvLdrError::CreateServiceErr(last_error.to_hresult().message()).into())
+        }
+    }
+
+    pub fn open_service(&self) -> Result<Service> {
+        if let Ok(hservice) =
+            unsafe { OpenServiceW(self.handle, pcwstr!(self.service_name), SERVICE_ALL_ACCESS) }
+        {
+            Ok(Service(hservice))
+        } else {
+            let last_error = unsafe { GetLastError() };
+            if last_error == ERROR_SERVICE_DOES_NOT_EXIST {
+                Err(
+                    DrvLdrError::ServiceNotExists(unsafe { GetLastError().to_hresult().message() })
+                        .into(),
+                )
             } else {
-                CloseServiceHandle(hmanager);
-                if GetLastError() == ERROR_SERVICE_EXISTS {
-                    return Ok(());
-                }
-                Err(anyhow::anyhow!(
-                    "install service failed {:?}",
-                    GetLastError().to_hresult().message()
-                ))
+                Err(
+                    DrvLdrError::OpenServiceErr(unsafe { GetLastError().to_hresult().message() })
+                        .into(),
+                )
             }
         }
     }
 
-    pub fn uninstall_serviec(&mut self) -> Result<()> {
-        unsafe {
-            let hmanager = OpenSCManagerW(None, None, SC_MANAGER_ALL_ACCESS)?;
-            if let Ok(hservice) = OpenServiceW(hmanager, p!(self.service_name), SERVICE_ALL_ACCESS)
-            {
-                if !DeleteService(hservice).as_bool() {
-                    CloseServiceHandle(hmanager);
-                    CloseServiceHandle(hservice);
-                    if GetLastError() == ERROR_SERVICE_MARKED_FOR_DELETE {
+    pub fn uninstall_service(&self) -> Result<()> {
+        log::debug!("uninstall {} service", self.service_name);
+        match self.open_service() {
+            Ok(service) => {
+                if unsafe { DeleteService(service.0) } == true {
+                    Ok(())
+                } else {
+                    let last_error = unsafe { GetLastError() };
+                    if last_error == ERROR_SERVICE_MARKED_FOR_DELETE {
+                        log::debug!("service {} marked for delete", self.service_name);
                         return Ok(());
                     }
-                    return Err(anyhow::anyhow!(
-                        "delete service failed {:?}",
-                        GetLastError()
-                    ));
+                    Err(DrvLdrError::DelServiceErr(last_error.to_hresult().message()).into())
                 }
-                CloseServiceHandle(hservice);
-            } else {
-                CloseServiceHandle(hmanager);
-                let err = GetLastError();
-                if err == ERROR_SERVICE_DOES_NOT_EXIST {
-                    return Ok(());
-                }
-                return Err(anyhow::anyhow!(
-                    "open service failed {:?} {:?}",
-                    err,
-                    err.to_hresult().message()
-                ));
             }
-            CloseServiceHandle(hmanager);
+            Err(e) => match e.downcast_ref::<DrvLdrError>() {
+                Some(DrvLdrError::ServiceNotExists(_)) => {
+                    log::debug!("service {} not exists", self.service_name);
+                    Ok(())
+                }
+                _ => Err(e),
+            },
         }
-        Ok(())
     }
 
-    pub fn start_service(&mut self) -> Result<()> {
-        unsafe {
-            let hmanager = OpenSCManagerW(None, None, SC_MANAGER_ALL_ACCESS)?;
-            if let Ok(hservice) = OpenServiceW(hmanager, p!(self.service_name), SERVICE_ALL_ACCESS)
-            {
-                if StartServiceW(hservice, None) == false {
-                    CloseServiceHandle(hservice);
-                    CloseServiceHandle(hmanager);
-                    if GetLastError() == ERROR_SERVICE_ALREADY_RUNNING {
-                        return Ok(());
-                    }
-                    return Err(anyhow::anyhow!(
-                        "start service failed {:?}",
-                        GetLastError().to_hresult().message()
-                    ));
-                }
-                let mut ssp = SERVICE_STATUS_PROCESS::default();
-                let mut bytesneed: u32 = 0;
+    pub fn start_service_and_wait(&self) -> Result<Service> {
+        log::debug!("start {} service", self.service_name);
+        let service = self.open_service()?;
+        // start service
+        service.start()?;
 
-                if !QueryServiceStatusEx(
-                    hservice,
-                    SC_STATUS_PROCESS_INFO,
-                    Some(to_buffer_mut::<SERVICE_STATUS_PROCESS>(&mut ssp)),
-                    &mut bytesneed,
-                )
-                .as_bool()
-                {
-                    CloseServiceHandle(hservice);
-                    CloseServiceHandle(hmanager);
-                    return Err(anyhow::anyhow!(
-                        "query service status failed {:?}",
-                        GetLastError().to_hresult().message()
-                    ));
-                }
+        let mut ssp = service.query_status_ex()?;
 
-                // service already running
-                if ssp.dwCurrentState != SERVICE_STOPPED
-                    && ssp.dwCurrentState != SERVICE_STOP_PENDING
-                {
-                    CloseServiceHandle(hservice);
-                    CloseServiceHandle(hmanager);
-                    return Ok(());
-                }
+        // service already running
+        if ssp.dwCurrentState != SERVICE_STOPPED && ssp.dwCurrentState != SERVICE_STOP_PENDING {
+            log::debug!("service {} already running", self.service_name);
+            return Ok(service);
+        }
 
-                // save the tick count and initial checkpoint
-                let mut start_tick_count = GetTickCount();
-                let mut old_checkpoint = ssp.dwCheckPoint;
+        // save the tick count and initial checkpoint
+        let mut start_tick_count = unsafe { GetTickCount() };
+        let mut old_checkpoint = ssp.dwCheckPoint;
 
-                // wait for the service to stop before attempting to start it.
-                while ssp.dwCurrentState == SERVICE_STOP_PENDING {
-                    // wait seconds
-                    let mut wait_time = ssp.dwWaitHint / 10;
-                    if wait_time < 1000 {
-                        wait_time = 1000;
-                    } else if wait_time > 10000 {
-                        wait_time = 10000;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(wait_time as u64));
+        // wait for the service to stop before attempting to start it.
+        while ssp.dwCurrentState == SERVICE_STOP_PENDING {
+            log::debug!("service {} stop pending, wait for the service to stop before attempting to start it",self.service_name);
+            // wait seconds
+            let mut wait_time = ssp.dwWaitHint / 10;
+            if wait_time < 1000 {
+                wait_time = 1000;
+            } else if wait_time > 10000 {
+                wait_time = 10000;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(wait_time as u64));
+            ssp = service.query_status_ex()?;
 
-                    if !QueryServiceStatusEx(
-                        hservice,
-                        SC_STATUS_PROCESS_INFO,
-                        Some(to_buffer_mut::<SERVICE_STATUS_PROCESS>(&mut ssp)),
-                        &mut bytesneed,
-                    )
-                    .as_bool()
-                    {
-                        CloseServiceHandle(hservice);
-                        CloseServiceHandle(hmanager);
-                        return Err(anyhow::anyhow!(
-                            "query service status failed {:?}",
-                            GetLastError().to_hresult().message()
-                        ));
-                    }
-
-                    if ssp.dwCheckPoint > old_checkpoint {
-                        // continue to wait and check
-                        start_tick_count = GetTickCount();
-                        old_checkpoint = ssp.dwCheckPoint;
-                    } else {
-                        if (GetTickCount() - start_tick_count) > ssp.dwWaitHint {
-                            CloseServiceHandle(hservice);
-                            CloseServiceHandle(hmanager);
-                            return Err(anyhow::anyhow!("timeout watting for service to stop"));
-                        }
-                    }
-                }
-
-                // attempt to start the service
-                if !StartServiceW(hservice, None).as_bool() {
-                    CloseServiceHandle(hservice);
-                    CloseServiceHandle(hmanager);
-                    return Err(anyhow::anyhow!(
-                        "start service failed {:?}",
-                        GetLastError().to_hresult().message()
-                    ));
-                }
-
-                // check the status until the service is no longer start pending.
-                if !QueryServiceStatusEx(
-                    hservice,
-                    SC_STATUS_PROCESS_INFO,
-                    Some(to_buffer_mut::<SERVICE_STATUS_PROCESS>(&mut ssp)),
-                    &mut bytesneed,
-                )
-                .as_bool()
-                {
-                    CloseServiceHandle(hservice);
-                    CloseServiceHandle(hmanager);
-                    return Err(anyhow::anyhow!(
-                        "query service status failed {:?}",
-                        GetLastError()
-                    ));
-                }
-
-                // save the tick count and initial checkpoint.
-                start_tick_count = GetTickCount();
+            if ssp.dwCheckPoint > old_checkpoint {
+                // continue to wait and check
+                start_tick_count = unsafe { GetTickCount() };
                 old_checkpoint = ssp.dwCheckPoint;
-                while ssp.dwCurrentState == SERVICE_START_PENDING {
-                    // wait seconds
-                    let mut wait_time = ssp.dwWaitHint / 10;
-                    if wait_time < 1000 {
-                        wait_time = 1000;
-                    } else if wait_time > 10000 {
-                        wait_time = 10000;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(wait_time as u64));
-
-                    if !QueryServiceStatusEx(
-                        hservice,
-                        SC_STATUS_PROCESS_INFO,
-                        Some(to_buffer_mut::<SERVICE_STATUS_PROCESS>(&mut ssp)),
-                        &mut bytesneed,
-                    )
-                    .as_bool()
-                    {
-                        break;
-                    }
-
-                    if ssp.dwCheckPoint > old_checkpoint {
-                        // continue to wait and check
-                        start_tick_count = GetTickCount();
-                        old_checkpoint = ssp.dwCheckPoint;
-                    } else {
-                        if (GetTickCount() - start_tick_count) > ssp.dwWaitHint {
-                            CloseServiceHandle(hservice);
-                            CloseServiceHandle(hmanager);
-                            break;
-                        }
-                    }
+            } else {
+                if (unsafe { GetTickCount() } - start_tick_count) > ssp.dwWaitHint {
+                    log::debug!("start service {} timeout", self.service_name);
+                    return Err(DrvLdrError::StartServiceTimeoutErr(unsafe {
+                        GetLastError().to_hresult().message()
+                    })
+                    .into());
                 }
-
-                CloseServiceHandle(hservice);
-                CloseServiceHandle(hmanager);
-
-                if ssp.dwCurrentState == SERVICE_RUNNING {
-                    return Ok(());
-                }
-
-                return Err( anyhow::anyhow!("service not started. current state: {:?}, exit code {}, check point: {}, wait hint: {}, error: {:?}", 
-                ssp.dwCurrentState, ssp.dwWin32ExitCode, ssp.dwCheckPoint, ssp.dwWaitHint, GetLastError()));
             }
-            CloseServiceHandle(hmanager);
-            return Err(anyhow::anyhow!("{:?}", GetLastError()));
         }
+
+        log::debug!("attempt to start service {}", self.service_name);
+        // attempt to start the service
+        service.start()?;
+
+        // check the status until the service is no longer start pending.
+        ssp = service.query_status_ex()?;
+
+        // save the tick count and initial checkpoint.
+        start_tick_count = unsafe { GetTickCount() };
+        old_checkpoint = ssp.dwCheckPoint;
+        while ssp.dwCurrentState == SERVICE_START_PENDING {
+            log::debug!("service {} start pending", self.service_name);
+            // wait seconds
+            let mut wait_time = ssp.dwWaitHint / 10;
+            if wait_time < 1000 {
+                wait_time = 1000;
+            } else if wait_time > 10000 {
+                wait_time = 10000;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(wait_time as u64));
+            ssp = service.query_status_ex()?;
+
+            if ssp.dwCheckPoint > old_checkpoint {
+                // continue to wait and check
+                start_tick_count = unsafe { GetTickCount() };
+                old_checkpoint = ssp.dwCheckPoint;
+            } else {
+                if (unsafe { GetTickCount() } - start_tick_count) > ssp.dwWaitHint {
+                    break;
+                }
+            }
+        }
+
+        if ssp.dwCurrentState == SERVICE_RUNNING {
+            log::debug!("service {} is running", self.service_name);
+            return Ok(service);
+        }
+
+        // start service fail
+        Err(DrvLdrError::StartServiceErr(unsafe { GetLastError().to_hresult().message() }).into())
     }
 
-    pub fn stop_service(&mut self) -> Result<()> {
-        unsafe {
-            let hmanager = OpenSCManagerW(None, None, SC_MANAGER_ALL_ACCESS)?;
-            if let Ok(hservice) = OpenServiceW(hmanager, p!(self.service_name), SERVICE_ALL_ACCESS)
-            {
+    pub fn stop_service_and_wait(&self) -> Result<()> {
+        log::debug!("stop service {}", self.service_name);
+        match self.open_service() {
+            Ok(service) => {
                 let mut ssp = SERVICE_STATUS_PROCESS::default();
-                let mut bytesneed: u32 = 0;
-
-                if !QueryServiceStatusEx(
-                    hservice,
-                    SC_STATUS_PROCESS_INFO,
-                    Some(to_buffer_mut::<SERVICE_STATUS_PROCESS>(&mut ssp)),
-                    &mut bytesneed,
-                )
-                .as_bool()
-                {
-                    CloseServiceHandle(hservice);
-                    CloseServiceHandle(hmanager);
-                    return Err(anyhow::anyhow!(
-                        "query service status failed {:?}",
-                        GetLastError()
-                    ));
-                }
-
                 // service stopped
                 if ssp.dwCurrentState == SERVICE_STOP_PENDING {
-                    println!(
-                        "service not stoped, waitting stopping current_state{:?}",
-                        ssp.dwCurrentState
-                    );
-                    // service stop pendign
-                    let start_time = GetTickCount();
+                    log::debug!("service {} stop pending", self.service_name);
+                    // service stop pendig
+                    let start_time = unsafe { GetTickCount() };
                     while ssp.dwCurrentState == SERVICE_STOP_PENDING {
                         let mut wait_time = ssp.dwWaitHint / 10;
                         if wait_time < 1000 {
@@ -320,103 +243,125 @@ impl DriverLoader {
                             wait_time = 10000;
                         }
                         std::thread::sleep(std::time::Duration::from_millis(wait_time as u64));
-
-                        if !QueryServiceStatusEx(
-                            hservice,
-                            SC_STATUS_PROCESS_INFO,
-                            Some(to_buffer_mut::<SERVICE_STATUS_PROCESS>(&mut ssp)),
-                            &mut bytesneed,
-                        )
-                        .as_bool()
-                        {
-                            CloseServiceHandle(hservice);
-                            CloseServiceHandle(hmanager);
-                            return Err(anyhow::anyhow!(
-                                "query service status failed {:?}",
-                                GetLastError()
-                            ));
-                        }
-
-                        if (GetTickCount() - start_time) > 30000 {
-                            CloseServiceHandle(hservice);
-                            CloseServiceHandle(hmanager);
-                            return Err(anyhow::anyhow!("stop service timeout"));
+                        ssp = service.query_status_ex()?;
+                        if (unsafe { GetTickCount() } - start_time) > 30000 {
+                            log::debug!("stop service {} timeout", self.service_name);
+                            return Err(DrvLdrError::StopServiceTimeoutErr(unsafe {
+                                GetLastError().to_hresult().message()
+                            })
+                            .into());
                         }
                     }
                 } else {
                     // stop srevice
-                    let mut ss = SERVICE_STATUS::default();
-                    println!("control stop service");
-                    if ControlService(hservice, SERVICE_CONTROL_STOP, &mut ss) == true {
-                        ssp.dwCheckPoint = ss.dwCheckPoint;
-                        ssp.dwControlsAccepted = ss.dwControlsAccepted;
-                        ssp.dwCurrentState = ss.dwCurrentState;
-                        ssp.dwWaitHint = ss.dwWaitHint;
-                        std::thread::sleep(std::time::Duration::from_millis(ssp.dwWaitHint as u64));
-                        let start_time = GetTickCount();
-                        while ssp.dwCurrentState == SERVICE_STOP_PENDING {
-                            let mut wait_time = ssp.dwWaitHint / 10;
-                            if wait_time < 1000 {
-                                wait_time = 1000;
-                            } else if wait_time > 10000 {
-                                wait_time = 10000;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(wait_time as u64));
-
-                            if !QueryServiceStatusEx(
-                                hservice,
-                                SC_STATUS_PROCESS_INFO,
-                                Some(to_buffer_mut::<SERVICE_STATUS_PROCESS>(&mut ssp)),
-                                &mut bytesneed,
-                            )
-                            .as_bool()
-                            {
-                                CloseServiceHandle(hservice);
-                                CloseServiceHandle(hmanager);
-                                return Err(anyhow::anyhow!(
-                                    "query service status failed {:?}",
-                                    GetLastError()
-                                ));
-                            }
-
-                            if (GetTickCount() - start_time) > 30000 {
-                                CloseServiceHandle(hservice);
-                                CloseServiceHandle(hmanager);
-                                return Err(anyhow::anyhow!("stop service timeout"));
-                            }
+                    let _ = service.stop()?;
+                    std::thread::sleep(std::time::Duration::from_millis(ssp.dwWaitHint as u64));
+                    ssp = service.query_status_ex()?;
+                    let start_time = unsafe { GetTickCount() };
+                    while ssp.dwCurrentState == SERVICE_STOP_PENDING {
+                        log::debug!("service {} stop pending", self.service_name);
+                        let mut wait_time = ssp.dwWaitHint / 10;
+                        if wait_time < 1000 {
+                            wait_time = 1000;
+                        } else if wait_time > 10000 {
+                            wait_time = 10000;
                         }
-                        println!("service stoped");
-                    } else {
-                        CloseServiceHandle(hservice);
-                        CloseServiceHandle(hmanager);
-                        return Err(anyhow::anyhow!("stop service failed {:?}", GetLastError()));
+                        std::thread::sleep(std::time::Duration::from_millis(wait_time as u64));
+                        ssp = service.query_status_ex()?;
+                        if (unsafe { GetTickCount() } - start_time) > 30000 {
+                            log::debug!("stop service {} timeout", self.service_name);
+                            return Err(DrvLdrError::StopServiceTimeoutErr(unsafe {
+                                GetLastError().to_hresult().message()
+                            })
+                            .into());
+                        }
                     }
                 }
-                CloseServiceHandle(hservice);
-                CloseServiceHandle(hmanager);
                 Ok(())
-            } else {
-                CloseServiceHandle(hmanager);
-                if GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST {
-                    return Ok(());
+            }
+            Err(e) => match e.downcast_ref::<DrvLdrError>() {
+                Some(DrvLdrError::ServiceNotExists(_)) => {
+                    log::debug!("service {} not exists", self.service_name);
+                    Ok(())
                 }
-                Err(anyhow::anyhow!("{:?}", GetLastError()))
+                _ => Err(e),
+            },
+        }
+    }
+}
+
+impl Drop for DrvLdr {
+    fn drop(&mut self) {
+        log::debug!("SCManager auto release");
+        let _ = self.stop_service_and_wait();
+        let _ = self.uninstall_service();
+        if !self.handle.is_invalid() {
+            unsafe {
+                CloseServiceHandle(self.handle);
             }
         }
     }
 }
 
-impl Drop for DriverLoader {
+pub struct Service(SC_HANDLE);
+
+impl Drop for Service {
     fn drop(&mut self) {
-        let _ = self.stop_service();
-        let _ = self.uninstall_serviec();
+        if !self.0.is_invalid() {
+            unsafe {
+                CloseServiceHandle(self.0);
+            }
+        }
     }
 }
 
-pub fn new(file_path: String, service_name: String, display_name: String) -> DriverLoader {
-    DriverLoader {
-        file_path,
-        service_name,
-        display_name,
+impl Service {
+    pub fn start(&self) -> Result<()> {
+        if unsafe { StartServiceW(self.0, None) } == true {
+            Ok(())
+        } else {
+            let last_error = unsafe { GetLastError() };
+            if last_error == ERROR_SERVICE_ALREADY_RUNNING {
+                return Ok(());
+            } else {
+                Err(
+                    DrvLdrError::StartServiceErr(unsafe { GetLastError().to_hresult().message() })
+                        .into(),
+                )
+            }
+        }
+    }
+
+    pub fn stop(&self) -> Result<SERVICE_STATUS> {
+        let mut ss = SERVICE_STATUS::default();
+        if unsafe { ControlService(self.0, SERVICE_CONTROL_STOP, &mut ss) } == true {
+            Ok(ss)
+        } else {
+            Err(
+                DrvLdrError::StopServiceErr(unsafe { GetLastError().to_hresult().message() })
+                    .into(),
+            )
+        }
+    }
+
+    pub fn query_status_ex(&self) -> Result<SERVICE_STATUS_PROCESS> {
+        let mut ssp = SERVICE_STATUS_PROCESS::default();
+        let mut bytesneed: u32 = 0;
+        if unsafe {
+            QueryServiceStatusEx(
+                self.0,
+                SC_STATUS_PROCESS_INFO,
+                Some(to_buffer_mut::<SERVICE_STATUS_PROCESS>(&mut ssp)),
+                &mut bytesneed,
+            )
+        } == true
+        {
+            Ok(ssp)
+        } else {
+            Err(DrvLdrError::QueryServiceStatusErr(unsafe {
+                GetLastError().to_hresult().message()
+            })
+            .into())
+        }
     }
 }
