@@ -28,6 +28,7 @@ pub struct ClassField {
 }
 
 impl<'a> SymbolManager<'a> {
+
     pub fn find_symbol_offset_by_name(&mut self, symbol_name: &str) -> Result<usize> {
         let mut symbols = self.symbol_table.iter();
         while let Ok(Some(symbol)) = symbols.next() {
@@ -43,6 +44,12 @@ impl<'a> SymbolManager<'a> {
             }
         }
         Err(DrvLdrError::SymbolNotFound(symbol_name.into()))
+    }
+
+    pub fn find_class_field_offset(&mut self,class_name: &str, field_name: &str) -> Result<usize> {
+        let class_info = self.find_class_by_name(class_name)?;
+        Ok(class_info.fields.get(field_name)
+            .ok_or(DrvLdrError::SymbolNotFound(format!("{}.{}",class_name,field_name).to_string()))?.offset)
     }
 
     pub fn find_class_by_name(&mut self, class_name: &str) -> Result<ClassInfo> {

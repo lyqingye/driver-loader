@@ -230,122 +230,77 @@ impl DriverControler {
     }
 
     pub fn init_global_context(&self) -> Result<CallResult> {
-        let kernel_module = self.qeury_kernel_module_info()?;
+        let kernel_module = self.query_kernel_module_info()?;
         let cache_dir = format!("{}\\symbols", std::env::temp_dir().to_string_lossy());
         let pdb_mgr = pdb_mgr::new(cache_dir)?;
-        let mut symbol_mgr = pdb_mgr.get_symbol_manager(&kernel_module.full_path())?;
+        let mut sym_mgr = pdb_mgr.get_symbol_manager(&kernel_module.full_path())?;
         let mut ctx = GlobalContext::default();
 
         ctx.pfn_exp_block_on_locked_handle_entry =
-            symbol_mgr.find_symbol_offset_by_name("ExpBlockOnLockedHandleEntry")?;
+            sym_mgr.find_symbol_offset_by_name("ExpBlockOnLockedHandleEntry")?;
 
         ctx.pfn_exf_unblock_push_lock =
-            symbol_mgr.find_symbol_offset_by_name("ExfUnblockPushLock")?;
+            sym_mgr.find_symbol_offset_by_name("ExfUnblockPushLock")?;
 
         ctx.pfn_psp_lock_process_list_exclusive =
-            symbol_mgr.find_symbol_offset_by_name("PspLockProcessListExclusive")?;
+            sym_mgr.find_symbol_offset_by_name("PspLockProcessListExclusive")?;
 
         ctx.pfn_psp_unlock_process_list_exclusive =
-            symbol_mgr.find_symbol_offset_by_name("PspUnlockProcessListExclusive")?;
+            sym_mgr.find_symbol_offset_by_name("PspUnlockProcessListExclusive")?;
 
-        ctx.pfn_ex_destroy_handle = symbol_mgr.find_symbol_offset_by_name("ExDestroyHandle")?;
+        ctx.pfn_ex_destroy_handle = sym_mgr.find_symbol_offset_by_name("ExDestroyHandle")?;
 
-        ctx.psp_cid_table = symbol_mgr.find_symbol_offset_by_name("PspCidTable")?;
+        ctx.psp_cid_table = sym_mgr.find_symbol_offset_by_name("PspCidTable")?;
 
-        ctx.ps_loaded_module_list = symbol_mgr.find_symbol_offset_by_name("PsLoadedModuleList")?;
+        ctx.ps_loaded_module_list = sym_mgr.find_symbol_offset_by_name("PsLoadedModuleList")?;
 
         ctx.ps_loaded_module_resource =
-            symbol_mgr.find_symbol_offset_by_name("PsLoadedModuleResource")?;
+            sym_mgr.find_symbol_offset_by_name("PsLoadedModuleResource")?;
 
         ctx.ps_active_process_head =
-            symbol_mgr.find_symbol_offset_by_name("PsActiveProcessHead")?;
+            sym_mgr.find_symbol_offset_by_name("PsActiveProcessHead")?;
 
-        ctx.ob_type_index_table = symbol_mgr.find_symbol_offset_by_name("ObTypeIndexTable")?;
-        ctx.ob_header_cookie = symbol_mgr.find_symbol_offset_by_name("ObHeaderCookie")?;
+        ctx.ob_type_index_table = sym_mgr.find_symbol_offset_by_name("ObTypeIndexTable")?;
+        ctx.ob_header_cookie = sym_mgr.find_symbol_offset_by_name("ObHeaderCookie")?;
 
         ctx.obp_root_directory_object =
-            symbol_mgr.find_symbol_offset_by_name("ObpRootDirectoryObject")?;
+            sym_mgr.find_symbol_offset_by_name("ObpRootDirectoryObject")?;
 
-        let clazz_object_header = symbol_mgr.find_class_by_name("_OBJECT_HEADER")?;
+        let clazz_object_header = sym_mgr.find_class_by_name("_OBJECT_HEADER")?;
 
         ctx.sizeof_object_header = clazz_object_header.size;
-        ctx.offset_type_index_of_object_header = clazz_object_header
-            .fields
-            .get("TypeIndex")
-            .ok_or(DrvLdrError::SymbolNotFound(
-                "_OBJECT_HEADER.TypeIndex".into(),
-            ))?
-            .offset;
+        ctx.offset_type_index_of_object_header =
+            sym_mgr.find_class_field_offset("_OBJECT_HEADER", "TypeIndex")?;
 
-        let clazz_object_type = symbol_mgr.find_class_by_name("_OBJECT_TYPE")?;
+        ctx.offset_type_name_of_object_type =
+            sym_mgr.find_class_field_offset("_OBJECT_TYPE", "Name")?;
 
-        ctx.offset_type_name_of_object_type = clazz_object_type
-            .fields
-            .get("Name")
-            .ok_or(DrvLdrError::SymbolNotFound("_OBJECT_TYPE.Name".into()))?
-            .offset;
-        ctx.offset_type_info_of_object_type = clazz_object_type
-            .fields
-            .get("TypeInfo")
-            .ok_or(DrvLdrError::SymbolNotFound("_OBJECT_TYPE.TypeInfo".into()))?
-            .offset;
+        ctx.offset_type_info_of_object_type =
+            sym_mgr.find_class_field_offset("_OBJECT_TYPE", "TypeInfo")?;
 
-        let clazz_object_type_initializer =
-            symbol_mgr.find_class_by_name("_OBJECT_TYPE_INITIALIZER")?;
+        ctx.offset_dump_proc_of_object_type_initializer =
+            sym_mgr.find_class_field_offset("_OBJECT_TYPE_INITIALIZER", "DumpProcedure")?;
 
-        ctx.offset_dump_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fields
-            .get("DumpProcedure")
-            .ok_or(DrvLdrError::SymbolNotFound(
-                "_OBJECT_TYPE_INITIALIZER.DumpProcedure".into(),
-            ))?
-            .offset;
+        ctx.offset_open_proc_of_object_type_initializer =
+            sym_mgr.find_class_field_offset("_OBJECT_TYPE_INITIALIZER", "OpenProcedure")?;
 
-        ctx.offset_open_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fields
-            .get("OpenProcedure")
-            .ok_or(DrvLdrError::SymbolNotFound(
-                "_OBJECT_TYPE_INITIALIZER.OpenProcedure".into(),
-            ))?
-            .offset;
+        ctx.offset_close_proc_of_object_type_initializer =
+            sym_mgr.find_class_field_offset("_OBJECT_TYPE_INITIALIZER", "CloseProcedure")?;
 
-        ctx.offset_close_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fields
-            .get("CloseProcedure")
-            .ok_or(DrvLdrError::SymbolNotFound(
-                "_OBJECT_TYPE_INITIALIZER.CloseProcedure".into(),
-            ))?
-            .offset;
+        ctx.offset_delete_proc_of_object_type_initializer =
+            sym_mgr.find_class_field_offset("_OBJECT_TYPE_INITIALIZER", "DeleteProcedure")?;
 
-        ctx.offset_delete_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fields
-            .get("DeleteProcedure")
-            .ok_or(DrvLdrError::SymbolNotFound(
-                "_OBJECT_TYPE_INITIALIZER.DeleteProcedure".into(),
-            ))?
-            .offset;
+        ctx.offset_parse_proc_of_object_type_initializer =
+            sym_mgr.find_class_field_offset("_OBJECT_TYPE_INITIALIZER", "ParseProcedure")?;
 
-        ctx.offset_parse_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fields
-            .get("ParseProcedure")
-            .ok_or(DrvLdrError::SymbolNotFound(
-                "_OBJECT_TYPE_INITIALIZER.ParseProcedure".into(),
-            ))?
-            .offset;
-
-        ctx.offset_parse_ex_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fields
-            .get("ParseProcedureEx")
-            .ok_or(DrvLdrError::SymbolNotFound(
-                "_OBJECT_TYPE_INITIALIZER.ParseProcedureEx".into(),
-            ))?
-            .offset;
+        ctx.offset_parse_ex_proc_of_object_type_initializer =
+            sym_mgr.find_class_field_offset("_OBJECT_TYPE_INITIALIZER", "ParseProcedureEx")?;
 
         // call driver
         self.send(*CTL_CODE_INIT_CONTEXT, ctx.into(), 0)
     }
 
-    pub fn qeury_kernel_module_info(&self) -> Result<SystemModuleEntry> {
+    pub fn query_kernel_module_info(&self) -> Result<SystemModuleEntry> {
         let call_result = self.send(
             *CTL_CODE_QUERY_KERNEL_MODULE_INFO,
             vec![],
