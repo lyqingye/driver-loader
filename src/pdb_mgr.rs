@@ -1,8 +1,8 @@
-use anyhow::Result;
+use crate::error::{DrvLdrError, Result};
 use goblin::pe::PE;
 use std::{fmt::Debug, fs::OpenOptions, path::Path, str::FromStr};
 
-use crate::symbol_manager::{self, SymbolManager};
+use crate::sym_mgr::{self, SymbolManager};
 
 #[derive(Debug)]
 pub struct PDBManager {
@@ -20,13 +20,13 @@ impl<'a> PDBManager {
         if !pdb_path.exists() {
             self.download_pdb_file(&debug_info)?;
         }
-        let mut result = symbol_manager::SymbolManager::new(pdb.clone());
+        let mut result = sym_mgr::SymbolManager::new(pdb.clone());
         if result.is_err() {
             // retry
             std::fs::remove_file(pdb_path)?;
             self.download_pdb_file(&debug_info)?;
         }
-        result = symbol_manager::SymbolManager::new(pdb);
+        result = sym_mgr::SymbolManager::new(pdb);
         result
     }
 
@@ -102,10 +102,7 @@ impl<'a> PDBManager {
 pub fn new(symbols_cache_dir: String) -> Result<PDBManager> {
     let dir_path = std::path::PathBuf::from_str(symbols_cache_dir.as_str())?;
     if dir_path.exists() && !dir_path.is_dir() {
-        return Err(anyhow::anyhow!(
-            "path: {} is not directory",
-            symbols_cache_dir
-        ));
+        return Err(DrvLdrError::InvalidPdbCacheDir(symbols_cache_dir));
     } else if !dir_path.exists() {
         std::fs::create_dir_all(dir_path)?;
     }

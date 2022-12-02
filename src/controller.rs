@@ -1,5 +1,7 @@
-use crate::{pcwstr, pdb_manager};
-use anyhow::{Ok, Result};
+use crate::{
+    error::{DrvLdrError, Result},
+    pcwstr, pdb_mgr,
+};
 use lazy_static::lazy_static;
 use std::mem::size_of;
 use winapi::um::winioctl::{CTL_CODE, FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED};
@@ -30,11 +32,15 @@ pub struct GlobalContext {
     // functions
     pfn_exp_block_on_locked_handle_entry: usize,
     pfn_exf_unblock_push_lock: usize,
+    pfn_ex_destroy_handle: usize,
+    pfn_psp_lock_process_list_exclusive: usize,
+    pfn_psp_unlock_process_list_exclusive: usize,
 
     // global variable
     psp_cid_table: usize,
     ps_loaded_module_list: usize,
     ps_loaded_module_resource: usize,
+    ps_active_process_head: usize,
     ob_type_index_table: usize,
     ob_header_cookie: usize,
     obp_root_directory_object: usize,
@@ -90,11 +96,11 @@ impl SystemModuleEntry {
 }
 
 impl TryFrom<Vec<u8>> for SystemModuleEntry {
-    type Error = anyhow::Error;
+    type Error = DrvLdrError;
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
         if value.len() < size_of::<SystemModuleEntry>() {
-            return Err(anyhow::anyhow!("SystemModuleEntry buffer to small"));
+            return Err(DrvLdrError::CallDrvBufferToSmall);
         }
         Ok(unsafe { (value.as_ptr() as *const SystemModuleEntry).read() })
     }
@@ -111,8 +117,8 @@ impl CallResult {
         self.status.is_ok()
     }
 
-    pub fn to_err(&self) -> anyhow::Error {
-        anyhow::anyhow!("{:?}", self.status.to_hresult())
+    pub fn to_err(&self) -> DrvLdrError {
+        DrvLdrError::CallDrvErr(self.status.to_hresult().message())
     }
 }
 
@@ -120,7 +126,7 @@ pub fn parse_call_result_from_buffer(buffer: &[u8]) -> Result<CallResult> {
     let size_of_meta = size_of::<NTSTATUS>() + size_of::<usize>();
 
     if buffer.len() < size_of_meta {
-        return Err(anyhow::anyhow!("buffer size to small"));
+        return Err(DrvLdrError::CallDrvBufferToSmall);
     }
     let ptr = buffer.as_ptr();
     let status = unsafe { (ptr as *const NTSTATUS).read() };
@@ -217,10 +223,8 @@ impl DriverControler {
             }
         }
         unsafe {
-            Err(anyhow::anyhow!(
-                "device io control faild {:?} {:?} ",
-                GetLastError(),
-                GetLastError().to_hresult().message()
+            Err(DrvLdrError::CallDrvErr(
+                GetLastError().to_hresult().message(),
             ))
         }
     }
@@ -228,7 +232,7 @@ impl DriverControler {
     pub fn init_global_context(&self) -> Result<CallResult> {
         let kernel_module = self.qeury_kernel_module_info()?;
         let cache_dir = format!("{}\\symbols", std::env::temp_dir().to_string_lossy());
-        let pdb_mgr = pdb_manager::new(cache_dir)?;
+        let pdb_mgr = pdb_mgr::new(cache_dir)?;
         let mut symbol_mgr = pdb_mgr.get_symbol_manager(&kernel_module.full_path())?;
         let mut ctx = GlobalContext::default();
 
@@ -238,12 +242,23 @@ impl DriverControler {
         ctx.pfn_exf_unblock_push_lock =
             symbol_mgr.find_symbol_offset_by_name("ExfUnblockPushLock")?;
 
+        ctx.pfn_psp_lock_process_list_exclusive =
+            symbol_mgr.find_symbol_offset_by_name("PspLockProcessListExclusive")?;
+
+        ctx.pfn_psp_unlock_process_list_exclusive =
+            symbol_mgr.find_symbol_offset_by_name("PspUnlockProcessListExclusive")?;
+
+        ctx.pfn_ex_destroy_handle = symbol_mgr.find_symbol_offset_by_name("ExDestroyHandle")?;
+
         ctx.psp_cid_table = symbol_mgr.find_symbol_offset_by_name("PspCidTable")?;
 
         ctx.ps_loaded_module_list = symbol_mgr.find_symbol_offset_by_name("PsLoadedModuleList")?;
 
         ctx.ps_loaded_module_resource =
             symbol_mgr.find_symbol_offset_by_name("PsLoadedModuleResource")?;
+
+        ctx.ps_active_process_head =
+            symbol_mgr.find_symbol_offset_by_name("PsActiveProcessHead")?;
 
         ctx.ob_type_index_table = symbol_mgr.find_symbol_offset_by_name("ObTypeIndexTable")?;
         ctx.ob_header_cookie = symbol_mgr.find_symbol_offset_by_name("ObHeaderCookie")?;
@@ -255,74 +270,74 @@ impl DriverControler {
 
         ctx.sizeof_object_header = clazz_object_header.size;
         ctx.offset_type_index_of_object_header = clazz_object_header
-            .fileds
+            .fields
             .get("TypeIndex")
-            .ok_or(anyhow::anyhow!(
-                "symbol: _OBJECT_HEADER.TypeIndex not found!"
+            .ok_or(DrvLdrError::SymbolNotFound(
+                "_OBJECT_HEADER.TypeIndex".into(),
             ))?
             .offset;
 
         let clazz_object_type = symbol_mgr.find_class_by_name("_OBJECT_TYPE")?;
 
         ctx.offset_type_name_of_object_type = clazz_object_type
-            .fileds
+            .fields
             .get("Name")
-            .ok_or(anyhow::anyhow!("symbol: _OBJECT_TYPE.Name not found!"))?
+            .ok_or(DrvLdrError::SymbolNotFound("_OBJECT_TYPE.Name".into()))?
             .offset;
         ctx.offset_type_info_of_object_type = clazz_object_type
-            .fileds
+            .fields
             .get("TypeInfo")
-            .ok_or(anyhow::anyhow!("symbol: _OBJECT_TYPE.TypeInfo not found!"))?
+            .ok_or(DrvLdrError::SymbolNotFound("_OBJECT_TYPE.TypeInfo".into()))?
             .offset;
 
         let clazz_object_type_initializer =
             symbol_mgr.find_class_by_name("_OBJECT_TYPE_INITIALIZER")?;
 
         ctx.offset_dump_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fileds
+            .fields
             .get("DumpProcedure")
-            .ok_or(anyhow::anyhow!(
-                "symbol: _OBJECT_TYPE_INITIALIZER.DumpProcedure not found!"
+            .ok_or(DrvLdrError::SymbolNotFound(
+                "_OBJECT_TYPE_INITIALIZER.DumpProcedure".into(),
             ))?
             .offset;
 
         ctx.offset_open_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fileds
+            .fields
             .get("OpenProcedure")
-            .ok_or(anyhow::anyhow!(
-                "symbol: _OBJECT_TYPE_INITIALIZER.OpenProcedure not found!"
+            .ok_or(DrvLdrError::SymbolNotFound(
+                "_OBJECT_TYPE_INITIALIZER.OpenProcedure".into(),
             ))?
             .offset;
 
         ctx.offset_close_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fileds
+            .fields
             .get("CloseProcedure")
-            .ok_or(anyhow::anyhow!(
-                "symbol: _OBJECT_TYPE_INITIALIZER.CloseProcedure not found!"
+            .ok_or(DrvLdrError::SymbolNotFound(
+                "_OBJECT_TYPE_INITIALIZER.CloseProcedure".into(),
             ))?
             .offset;
 
         ctx.offset_delete_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fileds
+            .fields
             .get("DeleteProcedure")
-            .ok_or(anyhow::anyhow!(
-                "symbol: _OBJECT_TYPE_INITIALIZER.DeleteProcedure not found!"
+            .ok_or(DrvLdrError::SymbolNotFound(
+                "_OBJECT_TYPE_INITIALIZER.DeleteProcedure".into(),
             ))?
             .offset;
 
         ctx.offset_parse_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fileds
+            .fields
             .get("ParseProcedure")
-            .ok_or(anyhow::anyhow!(
-                "symbol: _OBJECT_TYPE_INITIALIZER.ParseProcedure not found!"
+            .ok_or(DrvLdrError::SymbolNotFound(
+                "_OBJECT_TYPE_INITIALIZER.ParseProcedure".into(),
             ))?
             .offset;
 
         ctx.offset_parse_ex_proc_of_object_type_initializer = clazz_object_type_initializer
-            .fileds
+            .fields
             .get("ParseProcedureEx")
-            .ok_or(anyhow::anyhow!(
-                "symbol: _OBJECT_TYPE_INITIALIZER.ParseProcedureEx not found!"
+            .ok_or(DrvLdrError::SymbolNotFound(
+                "_OBJECT_TYPE_INITIALIZER.ParseProcedureEx".into(),
             ))?
             .offset;
 
@@ -356,7 +371,7 @@ impl Drop for DriverControler {
 
 pub fn new(device_name: String) -> DriverControler {
     DriverControler {
-        device_name: device_name,
+        device_name,
         hdevice: INVALID_HANDLE_VALUE,
     }
 }

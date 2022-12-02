@@ -1,12 +1,11 @@
+use error::Result;
 use std::io::{stdin, stdout, Read, Write};
 
-use anyhow::Result;
-
-pub mod driver_controler;
-pub mod driver_loader;
+pub mod controller;
 pub mod error;
-pub mod pdb_manager;
-pub mod symbol_manager;
+pub mod loader;
+pub mod pdb_mgr;
+pub mod sym_mgr;
 
 fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -14,16 +13,17 @@ fn main() -> Result<()> {
         .format_module_path(true)
         .filter_module("goblin", log::LevelFilter::Error)
         .init();
-    let mgr = driver_loader::DrvLdr::new(
+    let ldr = loader::DrvLdr::new(
         "driver3",
         "driver3",
         "\\\\vmware-host\\Shared Folders\\Driver\\Driver.sys",
+        true,
     )?;
-    mgr.install_service().unwrap();
-    mgr.start_service_and_wait().unwrap();
-    let mut controler = driver_controler::new("\\??\\WindowsKernelResearch".to_owned());
-    controler.conn().unwrap();
-    controler.init_global_context().unwrap();
+    ldr.install_service().unwrap();
+    ldr.start_service_and_wait().unwrap();
+    let mut controller = controller::new("\\??\\WindowsKernelResearch".to_owned());
+    controller.conn().unwrap();
+    controller.init_global_context().unwrap();
     pause();
     Ok(())
 }

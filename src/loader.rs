@@ -1,4 +1,3 @@
-use anyhow::Result;
 use windows::Win32::{
     Foundation::{
         GetLastError, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST,
@@ -17,7 +16,7 @@ use windows::Win32::{
     },
 };
 
-use crate::error::DrvLdrError;
+use crate::error::{DrvLdrError, Result};
 
 #[macro_export]
 macro_rules! pcwstr {
@@ -41,22 +40,28 @@ pub struct DrvLdr {
     service_name: String,
     display_name: String,
     file_path: String,
+    auto_unload: bool,
 }
 
 impl DrvLdr {
-    pub fn new(service_name: &str, display_name: &str, file_path: &str) -> Result<DrvLdr> {
+    pub fn new(
+        service_name: &str,
+        display_name: &str,
+        file_path: &str,
+        auto_unload: bool,
+    ) -> Result<DrvLdr> {
         if let Ok(handle) = unsafe { OpenSCManagerW(None, None, SC_MANAGER_ALL_ACCESS) } {
             Ok(DrvLdr {
                 handle,
                 service_name: service_name.to_owned(),
                 display_name: display_name.to_owned(),
                 file_path: file_path.to_owned(),
+                auto_unload,
             })
         } else {
-            Err(
-                DrvLdrError::OpenSCManagerErr(unsafe { GetLastError().to_hresult().message() })
-                    .into(),
-            )
+            Err(DrvLdrError::OpenSCManagerErr(unsafe {
+                GetLastError().to_hresult().message()
+            }))
         }
     }
 
@@ -87,7 +92,9 @@ impl DrvLdr {
                 log::debug!("service {} already exists", self.service_name);
                 return Ok(());
             }
-            Err(DrvLdrError::CreateServiceErr(last_error.to_hresult().message()).into())
+            Err(DrvLdrError::CreateServiceErr(
+                last_error.to_hresult().message(),
+            ))
         }
     }
 
@@ -99,15 +106,13 @@ impl DrvLdr {
         } else {
             let last_error = unsafe { GetLastError() };
             if last_error == ERROR_SERVICE_DOES_NOT_EXIST {
-                Err(
-                    DrvLdrError::ServiceNotExists(unsafe { GetLastError().to_hresult().message() })
-                        .into(),
-                )
+                Err(DrvLdrError::ServiceNotExists(unsafe {
+                    GetLastError().to_hresult().message()
+                }))
             } else {
-                Err(
-                    DrvLdrError::OpenServiceErr(unsafe { GetLastError().to_hresult().message() })
-                        .into(),
-                )
+                Err(DrvLdrError::OpenServiceErr(unsafe {
+                    GetLastError().to_hresult().message()
+                }))
             }
         }
     }
@@ -124,16 +129,16 @@ impl DrvLdr {
                         log::debug!("service {} marked for delete", self.service_name);
                         return Ok(());
                     }
-                    Err(DrvLdrError::DelServiceErr(last_error.to_hresult().message()).into())
+                    Err(DrvLdrError::DelServiceErr(
+                        last_error.to_hresult().message(),
+                    ))
                 }
             }
-            Err(e) => match e.downcast_ref::<DrvLdrError>() {
-                Some(DrvLdrError::ServiceNotExists(_)) => {
-                    log::debug!("service {} not exists", self.service_name);
-                    Ok(())
-                }
-                _ => Err(e),
-            },
+            Err(DrvLdrError::ServiceNotExists(_)) => {
+                log::debug!("service {} not exists", self.service_name);
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -177,8 +182,7 @@ impl DrvLdr {
                     log::debug!("start service {} timeout", self.service_name);
                     return Err(DrvLdrError::StartServiceTimeoutErr(unsafe {
                         GetLastError().to_hresult().message()
-                    })
-                    .into());
+                    }));
                 }
             }
         }
@@ -222,7 +226,9 @@ impl DrvLdr {
         }
 
         // start service fail
-        Err(DrvLdrError::StartServiceErr(unsafe { GetLastError().to_hresult().message() }).into())
+        Err(DrvLdrError::StartServiceErr(unsafe {
+            GetLastError().to_hresult().message()
+        }))
     }
 
     pub fn stop_service_and_wait(&self) -> Result<()> {
@@ -233,7 +239,7 @@ impl DrvLdr {
                 // service stopped
                 if ssp.dwCurrentState == SERVICE_STOP_PENDING {
                     log::debug!("service {} stop pending", self.service_name);
-                    // service stop pendig
+                    // service stop pending
                     let start_time = unsafe { GetTickCount() };
                     while ssp.dwCurrentState == SERVICE_STOP_PENDING {
                         let mut wait_time = ssp.dwWaitHint / 10;
@@ -248,12 +254,11 @@ impl DrvLdr {
                             log::debug!("stop service {} timeout", self.service_name);
                             return Err(DrvLdrError::StopServiceTimeoutErr(unsafe {
                                 GetLastError().to_hresult().message()
-                            })
-                            .into());
+                            }));
                         }
                     }
                 } else {
-                    // stop srevice
+                    // stop service
                     let _ = service.stop()?;
                     std::thread::sleep(std::time::Duration::from_millis(ssp.dwWaitHint as u64));
                     ssp = service.query_status_ex()?;
@@ -272,29 +277,28 @@ impl DrvLdr {
                             log::debug!("stop service {} timeout", self.service_name);
                             return Err(DrvLdrError::StopServiceTimeoutErr(unsafe {
                                 GetLastError().to_hresult().message()
-                            })
-                            .into());
+                            }));
                         }
                     }
                 }
                 Ok(())
             }
-            Err(e) => match e.downcast_ref::<DrvLdrError>() {
-                Some(DrvLdrError::ServiceNotExists(_)) => {
-                    log::debug!("service {} not exists", self.service_name);
-                    Ok(())
-                }
-                _ => Err(e),
-            },
+            Err(DrvLdrError::ServiceNotExists(_)) => {
+                log::debug!("service {} not exists", self.service_name);
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
     }
 }
 
 impl Drop for DrvLdr {
     fn drop(&mut self) {
-        log::debug!("SCManager auto release");
-        let _ = self.stop_service_and_wait();
-        let _ = self.uninstall_service();
+        log::debug!("drv ldr auto unload");
+        if self.auto_unload {
+            let _ = self.stop_service_and_wait();
+            let _ = self.uninstall_service();
+        }
         if !self.handle.is_invalid() {
             unsafe {
                 CloseServiceHandle(self.handle);
@@ -324,10 +328,9 @@ impl Service {
             if last_error == ERROR_SERVICE_ALREADY_RUNNING {
                 return Ok(());
             } else {
-                Err(
-                    DrvLdrError::StartServiceErr(unsafe { GetLastError().to_hresult().message() })
-                        .into(),
-                )
+                Err(DrvLdrError::StartServiceErr(unsafe {
+                    GetLastError().to_hresult().message()
+                }))
             }
         }
     }
@@ -337,22 +340,21 @@ impl Service {
         if unsafe { ControlService(self.0, SERVICE_CONTROL_STOP, &mut ss) } == true {
             Ok(ss)
         } else {
-            Err(
-                DrvLdrError::StopServiceErr(unsafe { GetLastError().to_hresult().message() })
-                    .into(),
-            )
+            Err(DrvLdrError::StopServiceErr(unsafe {
+                GetLastError().to_hresult().message()
+            }))
         }
     }
 
     pub fn query_status_ex(&self) -> Result<SERVICE_STATUS_PROCESS> {
         let mut ssp = SERVICE_STATUS_PROCESS::default();
-        let mut bytesneed: u32 = 0;
+        let mut bytes_need: u32 = 0;
         if unsafe {
             QueryServiceStatusEx(
                 self.0,
                 SC_STATUS_PROCESS_INFO,
                 Some(to_buffer_mut::<SERVICE_STATUS_PROCESS>(&mut ssp)),
-                &mut bytesneed,
+                &mut bytes_need,
             )
         } == true
         {
@@ -360,8 +362,7 @@ impl Service {
         } else {
             Err(DrvLdrError::QueryServiceStatusErr(unsafe {
                 GetLastError().to_hresult().message()
-            })
-            .into())
+            }))
         }
     }
 }

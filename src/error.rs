@@ -1,7 +1,11 @@
+use std::ffi::FromBytesWithNulError;
+use std::str::Utf8Error;
 use thiserror::Error;
 use windows::{core::HSTRING, Win32::Foundation::WIN32_ERROR};
 
-#[derive(Error, Debug, PartialEq)]
+pub type Result<T, E = DrvLdrError> = core::result::Result<T, E>;
+
+#[derive(Error, Debug)]
 pub enum DrvLdrError {
     #[error("Open SCManager fail! {0}")]
     OpenSCManagerErr(HSTRING),
@@ -35,6 +39,42 @@ pub enum DrvLdrError {
 
     #[error("{0}")]
     Win32Error(String),
+
+    #[error("call driver buffer to small")]
+    CallDrvBufferToSmall,
+
+    #[error("call driver fail! {0}")]
+    CallDrvErr(HSTRING),
+
+    #[error("symbol {0} not found ")]
+    SymbolNotFound(String),
+
+    #[error("invalid pdb cache dir {0}")]
+    InvalidPdbCacheDir(String),
+
+    #[error("{0}")]
+    OtherError(#[from] anyhow::Error),
+
+    #[error("{0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("{0}")]
+    PdbErr(#[from] pdb::Error),
+
+    #[error("{0}")]
+    HttpErr(#[from] reqwest::Error),
+
+    #[error("{0}")]
+    PEErr(#[from] goblin::error::Error),
+
+    #[error("{0}")]
+    OtherErr(#[from] core::convert::Infallible),
+
+    #[error("{0}")]
+    FFIErr(#[from] FromBytesWithNulError),
+
+    #[error("{0}")]
+    FFIEncodeErr(#[from] Utf8Error),
 }
 
 impl From<WIN32_ERROR> for DrvLdrError {
@@ -43,6 +83,16 @@ impl From<WIN32_ERROR> for DrvLdrError {
             "code: {} message: {}",
             value.0,
             value.to_hresult().message()
+        ))
+    }
+}
+
+impl From<windows::core::Error> for DrvLdrError {
+    fn from(value: windows::core::Error) -> Self {
+        Self::Win32Error(format!(
+            "code: {} message: {}",
+            value.code().0,
+            value.code().message()
         ))
     }
 }

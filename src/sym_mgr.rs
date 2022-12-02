@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::error::{DrvLdrError, Result};
 use memmap::Mmap;
 use pdb::{FallibleIterator, TypeIndex};
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ pub struct ClassInfo {
     pub name: String,
     pub size: usize,
     pub type_index: TypeIndex,
-    pub fileds: HashMap<String, ClassField>,
+    pub fields: HashMap<String, ClassField>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,7 +42,7 @@ impl<'a> SymbolManager<'a> {
                 _ => {}
             }
         }
-        Err(anyhow::anyhow!("symbol: {} not found", symbol_name))
+        Err(DrvLdrError::SymbolNotFound(symbol_name.into()))
     }
 
     pub fn find_class_by_name(&mut self, class_name: &str) -> Result<ClassInfo> {
@@ -60,7 +60,7 @@ impl<'a> SymbolManager<'a> {
                         name: class_name.to_owned(),
                         type_index: typ.index(),
                         size: class.size as usize,
-                        fileds: HashMap::new(),
+                        fields: HashMap::new(),
                     };
                     if let Some(index) = class.fields {
                         match finder.find(index)?.parse()? {
@@ -69,7 +69,7 @@ impl<'a> SymbolManager<'a> {
                                     match el {
                                         pdb::TypeData::Member(m) => {
                                             let member_name = m.name.to_string().to_string();
-                                            clazz.fileds.insert(
+                                            clazz.fields.insert(
                                                 member_name,
                                                 ClassField {
                                                     offset: m.offset as usize,
@@ -90,7 +90,7 @@ impl<'a> SymbolManager<'a> {
                 }
             }
         }
-        Err(anyhow::anyhow!("symbol: {} not found", class_name))
+        Err(DrvLdrError::SymbolNotFound(class_name.into()))
     }
 
     pub fn new(pdb_path: String) -> Result<SymbolManager<'a>> {
