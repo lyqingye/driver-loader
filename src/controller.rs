@@ -57,6 +57,8 @@ pub struct GlobalContext {
     offset_delete_proc_of_object_type_initializer: usize,
     offset_parse_proc_of_object_type_initializer: usize,
     offset_parse_ex_proc_of_object_type_initializer: usize,
+
+    offset_directory_table_base_of_eprocess: usize,
 }
 
 impl Into<Vec<u8>> for GlobalContext {
@@ -142,12 +144,12 @@ pub fn parse_call_result_from_buffer(buffer: &[u8]) -> Result<CallResult> {
     Ok(CallResult { status, data })
 }
 
-pub struct DriverControler {
+pub struct DriverController {
     device_name: String,
     hdevice: HANDLE,
 }
 
-impl DriverControler {
+impl DriverController {
     pub fn conn(&mut self) -> Result<()> {
         unsafe {
             self.hdevice = CreateFileW(
@@ -296,6 +298,9 @@ impl DriverControler {
         ctx.offset_parse_ex_proc_of_object_type_initializer =
             sym_mgr.find_class_field_offset("_OBJECT_TYPE_INITIALIZER", "ParseProcedureEx")?;
 
+        ctx.offset_directory_table_base_of_eprocess =
+            sym_mgr.find_class_field_offset("_KPROCESS", "DirectoryTableBase")?;
+
         // call driver
         self.send(*CTL_CODE_INIT_CONTEXT, ctx.into(), 0)
     }
@@ -314,7 +319,7 @@ impl DriverControler {
     }
 }
 
-impl Drop for DriverControler {
+impl Drop for DriverController {
     fn drop(&mut self) {
         if !self.hdevice.is_invalid() {
             unsafe {
@@ -324,8 +329,8 @@ impl Drop for DriverControler {
     }
 }
 
-pub fn new(device_name: String) -> DriverControler {
-    DriverControler {
+pub fn new(device_name: String) -> DriverController {
+    DriverController {
         device_name,
         hdevice: INVALID_HANDLE_VALUE,
     }

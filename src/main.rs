@@ -16,13 +16,15 @@ fn main() -> Result<()> {
     let ldr = loader::DrvLdr::new(
         "driver3",
         "driver3",
-        "\\\\vmware-host\\Shared Folders\\Driver\\Driver.sys",
+        // "\\\\vmware-host\\Shared Folders\\Driver\\Driver.sys",
+         "c:\\Users\\ex\\Desktop\\Driver.sys",
         true,
     )?;
     ldr.install_service().unwrap();
     ldr.start_service_and_wait().unwrap();
     let mut controller = controller::new("\\??\\WindowsKernelResearch".to_owned());
     controller.conn().unwrap();
+    log::info!("init global context");
     controller.init_global_context().unwrap();
     pause();
     Ok(())
