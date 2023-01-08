@@ -4,7 +4,7 @@ use crate::{
 };
 use lazy_static::lazy_static;
 use std::mem::size_of;
-use winapi::um::winioctl::{CTL_CODE, FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED};
+use winapi::um::{winioctl::{CTL_CODE, FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED}};
 use windows::Win32::{
     Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS},
     Storage::FileSystem::{
@@ -24,6 +24,10 @@ lazy_static! {
         CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS);
     static ref CTL_CODE_QUERY_KERNEL_MODULE_INFO: u32 =
         CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS);
+    static ref CTL_CODE_READ_PROCESS_MEMORY: u32 =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS);
+    static ref CTL_CODE_WRITE_PROCESS_MEMORY: u32 =
+        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS);
 }
 
 #[repr(C)]
@@ -102,10 +106,18 @@ impl TryFrom<Vec<u8>> for SystemModuleEntry {
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
         if value.len() < size_of::<SystemModuleEntry>() {
+            log::error!("parse SystemModuleEntry error! buffer to small! expect: {:} actual: {:}", size_of::<SystemModuleEntry>(),value.len());
             return Err(DrvLdrError::CallDrvBufferToSmall);
         }
         Ok(unsafe { (value.as_ptr() as *const SystemModuleEntry).read() })
     }
+}
+
+#[repr(C)]
+#[derive(Debug,Default)]
+pub struct CallResultMeta {
+    pub status: NTSTATUS,
+    pub size_of_data: usize,
 }
 
 #[derive(Debug, Default)]
@@ -125,23 +137,35 @@ impl CallResult {
 }
 
 pub fn parse_call_result_from_buffer(buffer: &[u8]) -> Result<CallResult> {
-    let size_of_meta = size_of::<NTSTATUS>() + size_of::<usize>();
+    let size_of_meta = size_of::<CallResultMeta>();
 
     if buffer.len() < size_of_meta {
+        log::error!("call result buffer < size of meta({:})",size_of_meta);
         return Err(DrvLdrError::CallDrvBufferToSmall);
     }
     let ptr = buffer.as_ptr();
-    let status = unsafe { (ptr as *const NTSTATUS).read() };
-    let size_of_data = unsafe { ((ptr.add(size_of::<NTSTATUS>())) as *const usize).read() };
+    let meta = unsafe { (ptr as *const CallResultMeta).read() };
 
     let data;
-    if buffer.len() >= (size_of_meta + size_of_data) {
-        data = buffer[size_of_meta..(size_of_meta + size_of_data)].to_vec();
+    if buffer.len() >= (size_of_meta + meta.size_of_data) {
+        data = buffer[size_of_meta..(size_of_meta + meta.size_of_data)].to_vec();
     } else {
         data = vec![];
     }
 
-    Ok(CallResult { status, data })
+    Ok(CallResult { 
+        status: meta.status, 
+        data 
+    })
+}
+
+fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+    unsafe{
+        std::slice::from_raw_parts(
+            (p as *const T) as *const u8,
+            std::mem::size_of::<T>(),
+        )
+    }
 }
 
 pub struct DriverController {
@@ -166,7 +190,8 @@ impl DriverController {
     }
 
     pub fn send(&self, code: u32, input: Vec<u8>, size_of_output: usize) -> Result<CallResult> {
-        const SIZE_OF_META: usize = size_of::<NTSTATUS>() + size_of::<usize>();
+        log::debug!("call driver => code: {:?} input: {:?} size_of_output: {:?}",code,input,size_of_output);
+        const SIZE_OF_META: usize = size_of::<CallResultMeta>();
         let mut bytes_return = 0;
         if size_of_output > 0 {
             let mut result = vec![0; SIZE_OF_META + size_of_output];
@@ -206,7 +231,7 @@ impl DriverController {
                     return parse_call_result_from_buffer(result.as_slice());
                 }
                 // retry get output by actual output size
-                let mut result = vec![0; SIZE_OF_META + bytes_return as usize];
+                let mut result = vec![0; bytes_return as usize];
                 if unsafe {
                     DeviceIoControl(
                         self.hdevice,
@@ -317,6 +342,53 @@ impl DriverController {
             Err(call_result.to_err())
         }
     }
+
+    pub fn read_proc_mem(&self, pid: HANDLE,address: usize,num_of_bytes: usize) -> Result<Vec<u8>> {
+        #[repr(C)]
+        pub struct Param {
+            pub pid: HANDLE,
+            pub address: usize,
+            pub num_of_bytes: usize,
+        }
+        let input = Param {
+            pid,
+            address,
+            num_of_bytes,
+        };
+        let input_bytes = any_as_u8_slice::<Param>(&input).to_vec();
+
+        let call_result = self.send(
+            *CTL_CODE_READ_PROCESS_MEMORY,
+            input_bytes,
+            num_of_bytes,
+        )?;
+        Ok(call_result.data)
+    }
+
+    pub fn write_proc_mem(&self, pid: HANDLE,buffer: &[u8],address: usize) -> Result<usize> {
+        #[repr(C)]
+        pub struct Param {
+            pub pid: HANDLE,
+            pub address: usize,
+            pub num_of_bytes: usize,
+        }
+        let input = Param {
+            pid,
+            address,
+            num_of_bytes: buffer.len(),
+        };
+        let mut input_bytes = any_as_u8_slice::<Param>(&input).to_vec();
+        input_bytes.extend_from_slice(buffer);
+        let call_result = self.send(
+            *CTL_CODE_WRITE_PROCESS_MEMORY,
+            input_bytes,
+            size_of::<usize>(),
+        )?;
+        let bytes_to_write = unsafe{ (call_result.data.as_ptr() as *const usize).read()};
+        Ok(bytes_to_write)
+    }
+
+
 }
 
 impl Drop for DriverController {
@@ -338,29 +410,38 @@ pub fn new(device_name: String) -> DriverController {
 
 #[cfg(test)]
 mod test {
-    use windows::Win32::Foundation::STATUS_SUCCESS;
+    use windows::Win32::Foundation::STATUS_UNSUCCESSFUL;
+
+    use crate::controller::CallResultMeta;
 
     use super::parse_call_result_from_buffer;
 
     #[test]
     fn test_parse_call_result() {
         let mut buffer = Vec::new();
-        let code: i32 = STATUS_SUCCESS.0;
-        for ele in code.to_le_bytes() {
-            buffer.push(ele);
+        let mut meta: CallResultMeta = unsafe{std::mem::zeroed()};
+        meta.status = STATUS_UNSUCCESSFUL;
+        meta.size_of_data = 10;
+        let bytes = unsafe {
+            std::slice::from_raw_parts(&meta as *const CallResultMeta as *const u8, std::mem::size_of::<CallResultMeta>())
+        };
+
+        for ele in bytes {
+            buffer.push(*ele);
         }
-        for ele in 10usize.to_le_bytes() {
-            buffer.push(ele);
-        }
+
         let mut data = Vec::new();
         for i in 0..10 {
             buffer.push(i as u8);
             data.push(i as u8);
         }
+        meta.size_of_data = data.len();
+        println!("{:?}",bytes);
+
         println!("buffer len: {}", buffer.len());
 
         let result = parse_call_result_from_buffer(buffer.as_slice()).unwrap();
-        assert_eq!(STATUS_SUCCESS, result.status);
+        assert_eq!(STATUS_UNSUCCESSFUL, result.status);
         assert_eq!(data, result.data);
     }
 }
