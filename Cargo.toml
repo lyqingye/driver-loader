@@ -19,7 +19,7 @@ version = "0.3.9"
 features = ["winioctl"]
 
 [dependencies.windows]
-version = "0.41.0"
+version = "0.44.0"
 features = [
     # "Foundation_Numerics",
     # "Win32_System_Com",
