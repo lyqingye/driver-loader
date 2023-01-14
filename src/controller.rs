@@ -2,9 +2,8 @@ use crate::{
     error::{DrvLdrError, Result},
     pcwstr, pdb_mgr,
 };
-use lazy_static::lazy_static;
 use std::mem::size_of;
-use winapi::um::{winioctl::{CTL_CODE, FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED}};
+use winapi::um::{winioctl::{FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED}};
 use windows::Win32::{
     Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS},
     Storage::FileSystem::{
@@ -13,21 +12,42 @@ use windows::Win32::{
     },
     System::{SystemInformation::GetSystemDirectoryW, IO::DeviceIoControl},
 };
-
+use std::fmt::Write;
+use winapi::shared::minwindef::DWORD;
 //
 // Driver CTL Codes
 //
-lazy_static! {
-    static ref CTL_CODE_ECHO: u32 =
-        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS);
-    static ref CTL_CODE_INIT_CONTEXT: u32 =
-        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS);
-    static ref CTL_CODE_QUERY_KERNEL_MODULE_INFO: u32 =
-        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS);
-    static ref CTL_CODE_READ_PROCESS_MEMORY: u32 =
-        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS);
-    static ref CTL_CODE_WRITE_PROCESS_MEMORY: u32 =
-        CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS);
+const CTL_CODE_ECHO: u32 =
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS);
+const  CTL_CODE_INIT_CONTEXT: u32 =
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS);
+const  CTL_CODE_QUERY_KERNEL_MODULE_INFO: u32 =
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS);
+const  CTL_CODE_READ_PROCESS_MEMORY: u32 =
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS);
+const  CTL_CODE_WRITE_PROCESS_MEMORY: u32 =
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS);
+
+#[inline]
+#[allow(non_snake_case)]
+const fn CTL_CODE(
+    device_type: DWORD,
+    function: DWORD,
+    method: DWORD,
+    access: DWORD,
+) -> DWORD {
+    (device_type << 16) | (access << 14) | (function << 2) | method
+}
+
+fn code_to_str(code: u32) -> &'static str {
+    match code {
+        CTL_CODE_ECHO =>  "echo",
+        CTL_CODE_INIT_CONTEXT =>  "init-context",
+        CTL_CODE_QUERY_KERNEL_MODULE_INFO =>  "query-kernel-module-info",
+        CTL_CODE_READ_PROCESS_MEMORY =>  "read-ps-mem",
+        CTL_CODE_WRITE_PROCESS_MEMORY =>  "write-ps-mem",
+        _ => "unknown",
+    }
 }
 
 #[repr(C)]
@@ -153,6 +173,9 @@ pub fn parse_call_result_from_buffer(buffer: &[u8]) -> Result<CallResult> {
         data = vec![];
     }
 
+    log::debug!("<=");
+        log::debug!("\n{}",DriverController::view_buffer(data.as_slice()));
+
     Ok(CallResult { 
         status: meta.status, 
         data 
@@ -190,7 +213,10 @@ impl DriverController {
     }
 
     pub fn send(&self, code: u32, input: Vec<u8>, size_of_output: usize) -> Result<CallResult> {
-        log::debug!("call driver => code: {:?} input: {:?} size_of_output: {:?}",code,input,size_of_output);
+        log::debug!("call driver => code: [{}] size_of_output: {:?}",code_to_str(code),size_of_output);
+        log::debug!("=>");
+        log::debug!("\n{}",Self::view_buffer(input.as_slice()));
+        
         const SIZE_OF_META: usize = size_of::<CallResultMeta>();
         let mut bytes_return = 0;
         if size_of_output > 0 {
@@ -327,12 +353,12 @@ impl DriverController {
             sym_mgr.find_class_field_offset("_KPROCESS", "DirectoryTableBase")?;
 
         // call driver
-        self.send(*CTL_CODE_INIT_CONTEXT, ctx.into(), 0)
+        self.send(CTL_CODE_INIT_CONTEXT, ctx.into(), 0)
     }
 
     pub fn query_kernel_module_info(&self) -> Result<SystemModuleEntry> {
         let call_result = self.send(
-            *CTL_CODE_QUERY_KERNEL_MODULE_INFO,
+            CTL_CODE_QUERY_KERNEL_MODULE_INFO,
             vec![],
             size_of::<SystemModuleEntry>(),
         )?;
@@ -358,7 +384,7 @@ impl DriverController {
         let input_bytes = any_as_u8_slice::<Param>(&input).to_vec();
 
         let call_result = self.send(
-            *CTL_CODE_READ_PROCESS_MEMORY,
+            CTL_CODE_READ_PROCESS_MEMORY,
             input_bytes,
             num_of_bytes,
         )?;
@@ -380,7 +406,7 @@ impl DriverController {
         let mut input_bytes = any_as_u8_slice::<Param>(&input).to_vec();
         input_bytes.extend_from_slice(buffer);
         let call_result = self.send(
-            *CTL_CODE_WRITE_PROCESS_MEMORY,
+            CTL_CODE_WRITE_PROCESS_MEMORY,
             input_bytes,
             size_of::<usize>(),
         )?;
@@ -388,7 +414,22 @@ impl DriverController {
         Ok(bytes_to_write)
     }
 
-
+    fn view_buffer(data: &[u8]) -> String {
+        let mut buffer = String::new();
+        for line in data.chunks(16) {
+            let ascii_str: String = line.iter().map(|b| {
+                let c = *b as char;
+                if c.is_ascii_graphic() {
+                    c
+                }else {
+                    '.'
+                }
+            }).collect();
+            let hex_str = hex::encode_upper(line);
+            writeln!(buffer,"{} {}",hex_str, ascii_str).unwrap();
+        }
+        return buffer;
+    }
 }
 
 impl Drop for DriverController {
