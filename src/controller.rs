@@ -2,8 +2,10 @@ use crate::{
     error::{DrvLdrError, Result},
     pcwstr, pdb_mgr,
 };
+use std::fmt::Write;
 use std::mem::size_of;
-use winapi::um::{winioctl::{FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED}};
+use winapi::shared::minwindef::DWORD;
+use winapi::um::winioctl::{FILE_ANY_ACCESS, FILE_DEVICE_UNKNOWN, METHOD_BUFFERED};
 use windows::Win32::{
     Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE, NTSTATUS},
     Storage::FileSystem::{
@@ -12,40 +14,48 @@ use windows::Win32::{
     },
     System::{SystemInformation::GetSystemDirectoryW, IO::DeviceIoControl},
 };
-use std::fmt::Write;
-use winapi::shared::minwindef::DWORD;
 //
 // Driver CTL Codes
 //
-const CTL_CODE_ECHO: u32 =
-    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS);
-const  CTL_CODE_INIT_CONTEXT: u32 =
+const CTL_CODE_ECHO: u32 = CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS);
+
+const CTL_CODE_INIT_CONTEXT: u32 =
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS);
-const  CTL_CODE_QUERY_KERNEL_MODULE_INFO: u32 =
+
+const CTL_CODE_QUERY_KERNEL_MODULE_INFO: u32 =
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS);
-const  CTL_CODE_READ_PROCESS_MEMORY: u32 =
+
+const CTL_CODE_READ_PROCESS_MEMORY: u32 =
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS);
-const  CTL_CODE_WRITE_PROCESS_MEMORY: u32 =
+
+const CTL_CODE_WRITE_PROCESS_MEMORY: u32 =
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS);
+
+const CTL_CODE_READ_PHTSICAL_MEMORY: u32 =
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x807, METHOD_BUFFERED, FILE_ANY_ACCESS);
+
+const CTL_CODE_WRITE_PHTSICAL_MEMORY: u32 =
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x808, METHOD_BUFFERED, FILE_ANY_ACCESS);
+
+const CTL_CODE_ALLOC_PHTSICAL_MEMORY: u32 =
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x809, METHOD_BUFFERED, FILE_ANY_ACCESS);
+
+const CTL_CODE_FREE_PHTSICAL_MEMORY: u32 =
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x810, METHOD_BUFFERED, FILE_ANY_ACCESS);
 
 #[inline]
 #[allow(non_snake_case)]
-const fn CTL_CODE(
-    device_type: DWORD,
-    function: DWORD,
-    method: DWORD,
-    access: DWORD,
-) -> DWORD {
+const fn CTL_CODE(device_type: DWORD, function: DWORD, method: DWORD, access: DWORD) -> DWORD {
     (device_type << 16) | (access << 14) | (function << 2) | method
 }
 
 fn code_to_str(code: u32) -> &'static str {
     match code {
-        CTL_CODE_ECHO =>  "echo",
-        CTL_CODE_INIT_CONTEXT =>  "init-context",
-        CTL_CODE_QUERY_KERNEL_MODULE_INFO =>  "query-kernel-module-info",
-        CTL_CODE_READ_PROCESS_MEMORY =>  "read-ps-mem",
-        CTL_CODE_WRITE_PROCESS_MEMORY =>  "write-ps-mem",
+        CTL_CODE_ECHO => "echo",
+        CTL_CODE_INIT_CONTEXT => "init-context",
+        CTL_CODE_QUERY_KERNEL_MODULE_INFO => "query-kernel-module-info",
+        CTL_CODE_READ_PROCESS_MEMORY => "read-ps-mem",
+        CTL_CODE_WRITE_PROCESS_MEMORY => "write-ps-mem",
         _ => "unknown",
     }
 }
@@ -126,7 +136,11 @@ impl TryFrom<Vec<u8>> for SystemModuleEntry {
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
         if value.len() < size_of::<SystemModuleEntry>() {
-            log::error!("parse SystemModuleEntry error! buffer to small! expect: {:} actual: {:}", size_of::<SystemModuleEntry>(),value.len());
+            log::error!(
+                "parse SystemModuleEntry error! buffer to small! expect: {:} actual: {:}",
+                size_of::<SystemModuleEntry>(),
+                value.len()
+            );
             return Err(DrvLdrError::CallDrvBufferToSmall);
         }
         Ok(unsafe { (value.as_ptr() as *const SystemModuleEntry).read() })
@@ -134,7 +148,7 @@ impl TryFrom<Vec<u8>> for SystemModuleEntry {
 }
 
 #[repr(C)]
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub struct CallResultMeta {
     pub status: NTSTATUS,
     pub size_of_data: usize,
@@ -160,7 +174,7 @@ pub fn parse_call_result_from_buffer(buffer: &[u8]) -> Result<CallResult> {
     let size_of_meta = size_of::<CallResultMeta>();
 
     if buffer.len() < size_of_meta {
-        log::error!("call result buffer < size of meta({:})",size_of_meta);
+        log::error!("call result buffer < size of meta({:})", size_of_meta);
         return Err(DrvLdrError::CallDrvBufferToSmall);
     }
     let ptr = buffer.as_ptr();
@@ -173,22 +187,17 @@ pub fn parse_call_result_from_buffer(buffer: &[u8]) -> Result<CallResult> {
         data = vec![];
     }
 
-    log::debug!("<= [status]: {:x}",meta.status.0);
-        log::debug!("\n{}",DriverController::view_buffer(data.as_slice()));
+    log::debug!("<= [status]: {:x}", meta.status.0);
+    log::debug!("\n{}", DriverController::view_buffer(data.as_slice()));
 
-    Ok(CallResult { 
-        status: meta.status, 
-        data 
+    Ok(CallResult {
+        status: meta.status,
+        data,
     })
 }
 
 fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-    unsafe{
-        std::slice::from_raw_parts(
-            (p as *const T) as *const u8,
-            std::mem::size_of::<T>(),
-        )
-    }
+    unsafe { std::slice::from_raw_parts((p as *const T) as *const u8, std::mem::size_of::<T>()) }
 }
 
 pub struct DriverController {
@@ -213,10 +222,14 @@ impl DriverController {
     }
 
     pub fn send(&self, code: u32, input: Vec<u8>, size_of_output: usize) -> Result<CallResult> {
-        log::debug!("call driver => code: [{}] size_of_output: {:?}",code_to_str(code),size_of_output);
+        log::debug!(
+            "call driver => code: [{}] size_of_output: {:?}",
+            code_to_str(code),
+            size_of_output
+        );
         log::debug!("=>");
-        log::debug!("\n{}",Self::view_buffer(input.as_slice()));
-        
+        log::debug!("\n{}", Self::view_buffer(input.as_slice()));
+
         const SIZE_OF_META: usize = size_of::<CallResultMeta>();
         let mut bytes_return = 0;
         if size_of_output > 0 {
@@ -292,8 +305,7 @@ impl DriverController {
         ctx.pfn_exp_block_on_locked_handle_entry =
             sym_mgr.find_symbol_offset_by_name("ExpBlockOnLockedHandleEntry")?;
 
-        ctx.pfn_exf_unblock_push_lock =
-            sym_mgr.find_symbol_offset_by_name("ExfUnblockPushLock")?;
+        ctx.pfn_exf_unblock_push_lock = sym_mgr.find_symbol_offset_by_name("ExfUnblockPushLock")?;
 
         ctx.pfn_psp_lock_process_list_exclusive =
             sym_mgr.find_symbol_offset_by_name("PspLockProcessListExclusive")?;
@@ -310,8 +322,7 @@ impl DriverController {
         ctx.ps_loaded_module_resource =
             sym_mgr.find_symbol_offset_by_name("PsLoadedModuleResource")?;
 
-        ctx.ps_active_process_head =
-            sym_mgr.find_symbol_offset_by_name("PsActiveProcessHead")?;
+        ctx.ps_active_process_head = sym_mgr.find_symbol_offset_by_name("PsActiveProcessHead")?;
 
         ctx.ob_type_index_table = sym_mgr.find_symbol_offset_by_name("ObTypeIndexTable")?;
         ctx.ob_header_cookie = sym_mgr.find_symbol_offset_by_name("ObHeaderCookie")?;
@@ -369,7 +380,12 @@ impl DriverController {
         }
     }
 
-    pub fn read_proc_mem(&self, pid: HANDLE,address: usize,num_of_bytes: usize) -> Result<Vec<u8>> {
+    pub fn read_proc_mem(
+        &self,
+        pid: HANDLE,
+        address: usize,
+        num_of_bytes: usize,
+    ) -> Result<Vec<u8>> {
         #[repr(C)]
         pub struct Param {
             pub pid: HANDLE,
@@ -383,15 +399,11 @@ impl DriverController {
         };
         let input_bytes = any_as_u8_slice::<Param>(&input).to_vec();
 
-        let call_result = self.send(
-            CTL_CODE_READ_PROCESS_MEMORY,
-            input_bytes,
-            num_of_bytes,
-        )?;
+        let call_result = self.send(CTL_CODE_READ_PROCESS_MEMORY, input_bytes, num_of_bytes)?;
         Ok(call_result.data)
     }
 
-    pub fn write_proc_mem(&self, pid: HANDLE,buffer: &[u8],address: usize) -> Result<usize> {
+    pub fn write_proc_mem(&self, pid: HANDLE, buffer: &[u8], address: usize) -> Result<usize> {
         #[repr(C)]
         pub struct Param {
             pub pid: HANDLE,
@@ -411,23 +423,104 @@ impl DriverController {
             size_of::<usize>(),
         )?;
 
-        let bytes_to_write = unsafe{ (call_result.data.as_ptr() as *const usize).read()};
+        let bytes_to_write = unsafe { (call_result.data.as_ptr() as *const usize).read() };
         Ok(bytes_to_write)
+    }
+
+    pub fn read_physical_memory(&self, address: usize, num_of_bytes: usize) -> Result<Vec<u8>> {
+        #[repr(C)]
+        pub struct Param {
+            pub address: usize,
+            pub num_of_bytes: usize,
+        }
+        let input = Param {
+            address,
+            num_of_bytes,
+        };
+        let input_bytes = any_as_u8_slice::<Param>(&input).to_vec();
+
+        let call_result = self.send(CTL_CODE_READ_PHTSICAL_MEMORY, input_bytes, num_of_bytes)?;
+        Ok(call_result.data)
+    }
+
+    pub fn write_physical_memory(&self, buffer: &[u8], address: usize) -> Result<usize> {
+        #[repr(C)]
+        pub struct Param {
+            pub address: usize,
+            pub num_of_bytes: usize,
+        }
+        let input = Param {
+            address,
+            num_of_bytes: buffer.len(),
+        };
+        let mut input_bytes = any_as_u8_slice::<Param>(&input).to_vec();
+        input_bytes.extend_from_slice(buffer);
+        let call_result = self.send(
+            CTL_CODE_WRITE_PHTSICAL_MEMORY,
+            input_bytes,
+            size_of::<usize>(),
+        )?;
+
+        let bytes_to_write = unsafe { (call_result.data.as_ptr() as *const usize).read() };
+        Ok(bytes_to_write)
+    }
+
+    pub fn alloc_physcinal_memory(&self, address: usize, size: usize) -> Result<usize> {
+        #[repr(C)]
+        pub struct Param {
+            pub address: usize,
+            pub size: usize,
+        }
+        let input = Param { address, size };
+        let input_bytes = any_as_u8_slice::<Param>(&input).to_vec();
+        let call_result = self.send(
+            CTL_CODE_ALLOC_PHTSICAL_MEMORY,
+            input_bytes,
+            size_of::<usize>(),
+        )?;
+        if call_result.is_success() {
+            let allocate_address = unsafe { (call_result.data.as_ptr() as *const usize).read() };
+            Ok(allocate_address)
+        } else {
+            Err(call_result.to_err())
+        }
+    }
+
+    pub fn free_physcinal_memory(&self, address: usize) -> Result<()> {
+        #[repr(C)]
+        pub struct Param {
+            pub address: usize,
+        }
+        let input = Param { address };
+        let input_bytes = any_as_u8_slice::<Param>(&input).to_vec();
+        let call_result = self.send(
+            CTL_CODE_FREE_PHTSICAL_MEMORY,
+            input_bytes,
+            size_of::<usize>(),
+        )?;
+        if call_result.is_success() {
+            Ok(())
+        } else {
+            Err(call_result.to_err())
+        }
     }
 
     fn view_buffer(data: &[u8]) -> String {
         let mut buffer = String::new();
         for line in data.chunks(16) {
-            let ascii_str: String = line.iter().map(|b| {
-                let c = *b as char;
-                if c.is_ascii_graphic() {
-                    c
-                }else {
-                    '.'
-                }
-            }).collect();
+            let ascii_str: String = line
+                .iter()
+                .map(|b| {
+                    let c = *b as char;
+                    if c.is_ascii_graphic() {
+                        c
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
             let hex_str = hex::encode_upper(line);
-            writeln!(buffer,"{} {}",hex_str, ascii_str).unwrap();
+            writeln!(buffer, "{} {}", hex_str, ascii_str).unwrap();
         }
         return buffer;
     }
@@ -461,11 +554,14 @@ mod test {
     #[test]
     fn test_parse_call_result() {
         let mut buffer = Vec::new();
-        let mut meta: CallResultMeta = unsafe{std::mem::zeroed()};
+        let mut meta: CallResultMeta = unsafe { std::mem::zeroed() };
         meta.status = STATUS_UNSUCCESSFUL;
         meta.size_of_data = 10;
         let bytes = unsafe {
-            std::slice::from_raw_parts(&meta as *const CallResultMeta as *const u8, std::mem::size_of::<CallResultMeta>())
+            std::slice::from_raw_parts(
+                &meta as *const CallResultMeta as *const u8,
+                std::mem::size_of::<CallResultMeta>(),
+            )
         };
 
         for ele in bytes {
@@ -478,7 +574,7 @@ mod test {
             data.push(i as u8);
         }
         meta.size_of_data = data.len();
-        println!("{:?}",bytes);
+        println!("{:?}", bytes);
 
         println!("buffer len: {}", buffer.len());
 
