@@ -56,6 +56,10 @@ fn code_to_str(code: u32) -> &'static str {
         CTL_CODE_QUERY_KERNEL_MODULE_INFO => "query-kernel-module-info",
         CTL_CODE_READ_PROCESS_MEMORY => "read-ps-mem",
         CTL_CODE_WRITE_PROCESS_MEMORY => "write-ps-mem",
+        CTL_CODE_ALLOC_PHTSICAL_MEMORY => "alloc-phy-mem",
+        CTL_CODE_FREE_PHTSICAL_MEMORY => "free-phy-mem",
+        CTL_CODE_READ_PHTSICAL_MEMORY => "read-phy-mem",
+        CTL_CODE_WRITE_PHTSICAL_MEMORY => "write-phy-mem",
         _ => "unknown",
     }
 }
@@ -465,13 +469,12 @@ impl DriverController {
         Ok(bytes_to_write)
     }
 
-    pub fn alloc_physcinal_memory(&self, address: usize, size: usize) -> Result<usize> {
+    pub fn alloc_physcinal_memory(&self, size: usize) -> Result<usize> {
         #[repr(C)]
         pub struct Param {
-            pub address: usize,
             pub size: usize,
         }
-        let input = Param { address, size };
+        let input = Param { size };
         let input_bytes = any_as_u8_slice::<Param>(&input).to_vec();
         let call_result = self.send(
             CTL_CODE_ALLOC_PHTSICAL_MEMORY,
