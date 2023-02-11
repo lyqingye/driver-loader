@@ -173,7 +173,7 @@ pub fn parse_call_result_from_buffer(buffer: &[u8]) -> Result<CallResult> {
         data = vec![];
     }
 
-    log::debug!("<=");
+    log::debug!("<= [status]: {:x}",meta.status.0);
         log::debug!("\n{}",DriverController::view_buffer(data.as_slice()));
 
     Ok(CallResult { 
@@ -410,6 +410,7 @@ impl DriverController {
             input_bytes,
             size_of::<usize>(),
         )?;
+
         let bytes_to_write = unsafe{ (call_result.data.as_ptr() as *const usize).read()};
         Ok(bytes_to_write)
     }
