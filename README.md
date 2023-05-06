@@ -1,5 +1,5 @@
 # driver-loader
-A library for loader windows kernel driver
+A library for load windows kernel driver
 
 # Features
 - PDB Manager
